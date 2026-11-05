@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { ArrowDownRight, ArrowRight, BookOpen, CalendarDays, ChevronRight, ClipboardList, FolderOpen, GraduationCap, House, KeyRound, LogIn, LogOut, Menu, Settings2, UsersRound, Wallet, X } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, ChevronRight, ClipboardList, FolderOpen, GitFork, GraduationCap, House, KeyRound, LogIn, LogOut, Menu, Settings2, UsersRound, Wallet, X } from 'lucide-react'
 import { api, dateCN, dateLabel, errorMessage, timestamp, useQuery } from './api'
 import { AsyncForm, Badge, Empty, Feedback, Field, PageTitle, Panel, val } from './ui'
 import { roleNames, type Config, type Task, type Timetable, type User } from './types'
@@ -10,6 +10,16 @@ const Resources = lazy(() => import('./catalog').then(module => ({default: modul
 const ClassPage = lazy(() => import('./catalog').then(module => ({default: module.ClassPage})))
 const Accounts = lazy(() => import('./catalog').then(module => ({default: module.Accounts})))
 const Finance = lazy(() => import('./finance').then(module => ({default: module.Finance})))
+
+const repositoryUrl = 'https://github.com/Akiyy-dev/spxd-JW'
+
+function RepositoryLink({placement}: {placement: 'topbar' | 'footer'}) {
+  return <a className={'repository-link repository-link-' + placement} href={repositoryUrl} target="_blank" rel="noopener noreferrer" aria-label="GitHub 仓库：Akiyy-dev/spxd-JW（在新标签页打开）" title="在新标签页打开 GitHub 仓库">
+    <GitFork size={17} aria-hidden="true"/>
+    <span>GitHub{placement === 'footer' && <span className="repository-name"> / spxd-JW</span>}</span>
+    <ArrowUpRight className="repository-external" size={14} aria-hidden="true"/>
+  </a>
+}
 
 const modules = [
   {path: '/', label: '班级首页', icon: House},
@@ -114,6 +124,7 @@ export function App() {
         <div className="breadcrumb"><span>{name}</span><ChevronRight size={15}/><strong>{currentTitle}</strong></div>
         <div className="topbar-actions">
           {config.data?.demo && <Badge tone="warn">演示数据</Badge>}
+          <RepositoryLink placement="topbar" />
           {user ? <><Link to="/account" className="user-chip"><span className="avatar">{user.name.slice(0, 1)}</span><span className="chip-name">{user.name}<small>{roleNames[user.role]}</small></span></Link><button className="btn quiet icon" title="退出登录" aria-label="退出登录" disabled={signingOut} onClick={() => void logout()}><LogOut size={18}/></button></> : <Link to="/login" className="btn"><LogIn size={17}/>登录</Link>}
         </div>
       </header>
@@ -137,7 +148,10 @@ export function App() {
           <Route path="*" element={<PageTitle label="404" title="找不到页面" detail="该地址可能已经变更。" actions={<Link className="btn primary" to="/">返回首页</Link>} />} />
         </Routes></Suspense>
       </main>
-      <footer className="footer"><GraduationCap size={17}/>{name}<span>课程 · 学习 · 班级生活</span></footer>
+      <footer className="footer">
+        <div className="footer-brand"><GraduationCap size={17} aria-hidden="true"/>{name}</div>
+        <div className="footer-links"><span>课程 · 学习 · 班级生活</span><RepositoryLink placement="footer" /></div>
+      </footer>
     </div>
   </div>
 }
