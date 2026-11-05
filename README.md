@@ -1,0 +1,78 @@
+# 班级空间
+
+单班级日常事务网站，包含首页、作业公告分发、固定周课表、事务办理、资料中心、班费记录和班级信息。React + TypeScript + Fastify + SQLite；所有业务附件和导出文件使用腾讯云 COS。
+
+## 本地运行
+
+需要 Node.js 24 或更高版本。已安装依赖时直接运行：
+
+```powershell
+npm run dev
+```
+
+浏览器打开 http://127.0.0.1:5173 。当前 `.env` 指向单独的 `data/demo.sqlite`，演示页面和示例数据均有标记。示例账号位于忽略提交的 `data/demo-accounts.txt`；每次首次生成时随机设置密码，没有通用生产密码。
+
+全新检出：
+
+```powershell
+npm ci
+npm run demo
+Copy-Item .env.example .env
+```
+
+然后将 `.env` 中的 `DATABASE_PATH` 改为 `./data/demo.sqlite`。再次运行 demo 不会覆盖已有数据。
+
+前端修改会自动刷新。后端修改后请停止并重新运行 `npm run dev`。开发时无需设置 `NODE_ENV`，避免把开发模式带入生产构建。
+
+## 正式初始化
+
+把 `.env` 的 `DATABASE_PATH` 改为 `./data/classroom.sqlite`（新的生产库），配置站点域名和 COS 后运行：
+
+```powershell
+npm run setup
+npm run build
+npm start
+```
+
+setup 交互输入管理员账号和名称，生成一次性初始密码，首次登录强制修改；也可通过受控运行环境提供 ADMIN_USERNAME、ADMIN_NAME、ADMIN_PASSWORD。管理员创建班委和学生账号，仅给指定班委授予班费权限。管理员本人不进行记账。
+
+正式环境设置 NODE_ENV=production、APP_ORIGIN=https://你的域名，并在反向代理配置 HTTPS，将同域页面与 /api 请求转发到 Node 服务。运行账号只需本项目和数据目录权限。服务默认绑定127.0.0.1，需容器访问时显式设置 HOST。数据库须放持久化磁盘，不放在临时容器层。
+
+TRUST_PROXY 仅列出实际受信任的代理 IP/CIDR，默认 `127.0.0.1,::1`；不同容器代理须显式配置，设为空可关闭。代理必须覆盖或规范追加客户端来源地址，Node 服务只接受预期网络入口，不能信任任意公网发送的转发头。登录限流据此区分同学的客户端地址。
+
+运行 `npm run backup` 使用 SQLite 一致性备份生成 `data/backups/*.sqlite`。恢复时先停止服务，确认目标文件及备份，保留旧数据库和 WAL/SHM 文件的同一份完整副本，再以备份库替换数据库文件；不要向正在运行的数据库直接复制。重启后核对账号和账目。COS 对象不存放在源码库，远程数据库备份可放入另行授权的 COS 私有备份前缀。
+
+## 腾讯云 COS
+
+配置项在 `.env.example`：
+
+| 配置 | 内容 |
+| --- | --- |
+| COS_BUCKET | 带 APPID 的桶名 |
+| COS_REGION | 桶地域，例如 ap-beijing |
+| COS_SECRET_ID / COS_SECRET_KEY | 只存在服务器的受限凭据 |
+| COS_SESSION_TOKEN | 可选，使用临时凭据时提供令牌并由运行环境续期 |
+| COS_PREVIEW_DOMAIN | 可选自定义预览域名，需与该桶绑定 |
+
+业务桶使用私有读写；当前实现要求未启用版本控制，以便签入禁止覆盖头。权限只覆盖 `classroom/` 对象前缀的必要 PutObject、GetObject、HeadObject、DeleteObject 操作，不授予桶管理权限。使用长期凭据时也必须是受限子账号；不把任何密钥写入前端、Git 或聊天。
+
+CORS 只允许实际网站来源（开发时额外允许本机5173来源）；方法 PUT、GET、HEAD；允许请求头 Content-Type、x-cos-forbid-overwrite；暴露 ETag 和 Content-Length。上传 URL 签入实际 Content-Length（由浏览器发送），单个文件限制20MiB。上传完成后后端核验大小、格式签名及权限才确认文件，业务提交再次检查截止和归属。
+
+上传签名10分钟，下载签名5分钟，导出对象24小时。已经签发的链接在有效期内可被持有者使用；撤权停止新链接发放。课件、提交和班费凭证不会因知道文件 ID 而绕过权限。预览默认需要自定义域名，没有域名则提供下载。
+
+COS 未配置时，页面、账号、课表及无附件业务可以正常使用；上传、下载和导出明确返回存储未配置错误。不会把文件偷偷改存本地或另一家云服务。真实上传、下载和域名配置需要使用你的桶进行联调，当前自动化测试使用内存存储替身。
+
+可定期手工运行 `npm run files:cleanup` 清理过期临时文件；该命令只操作本系统记录的过期对象，不枚举删除其他 COS 文件。将其纳入部署环境的维护计划前，先在测试桶核验。ZIP 附件导出按人员分文件夹，单批上限100MiB，大于上限可按人员分批导出。
+
+## 开发验证
+
+```powershell
+npm test
+npm run build
+```
+
+测试覆盖会话、跨站请求、身份授权、作业对象快照、截止/补交、归档/撤回、账目幂等和修订、COS 文件状态与访问权限、课表冲突及日期例外。金额以整数分保存，不接入支付行为。Vite 开发服务把 /api 代理至3001；生产由同一个Node入口提供构建后的页面。
+
+设计与 API 约定位于 docs/。`data/`、`.env`、依赖、构建产物和运行凭据不会进入版本控制。uuid 的兼容修复版本通过 npm overrides 固定到11系，ExcelJS使用的v4接口已验证；避免直接降级整个表格库。
+
+本次测试、浏览器操作及配置限制记录在 [验收记录](docs/verification.md)，页面截图位于 `docs/screenshots/`。

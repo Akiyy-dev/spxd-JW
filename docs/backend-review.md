@@ -1,0 +1,32 @@
+# Independent backend review
+
+Reviewed 2026-11-06 against the approved design and API contract. Scope: server modules, database, relevant tests and deployment scripts; frontend excluded. No implementation changes made. Existing full test suite was not rerun; findings below use targeted checks.
+
+## Original findings (resolved)
+
+The descriptions and line numbers below preserve the original review evidence; they do not describe the current implementation. All four findings, including the calendar-masking follow-up to finding 2, are resolved in the scoped re-review below.
+
+1. **[P1] Reverse-proxy deployment shares one login lockout across all users — `server/app.ts:16`, `server/auth.ts:135-146`.** The documented production topology puts a reverse proxy in front of a loopback-bound API, but Fastify has no narrowly configured `trustProxy`. Therefore `request.ip` is the proxy address for every user. Thirty failed logins (spread across six or more usernames) exhaust the shared IP bucket for the remaining 15-minute window; correct credentials from unrelated users are then rejected. Reproduced with 30 requests carrying one forwarded IP followed by valid credentials carrying another: HTTP 429. Configure the known trusted proxy boundary and use correctly resolved client IPs, with account-oriented limits that do not let one account lock out the whole class. Do not blindly trust arbitrary forwarded headers.
+
+2. **[P2] Removing a timetable exception can create overlapping classes — `server/timetable.ts:34` (also template writes at line 32).** Start with Monday A in period 1 and B in period 2; cancel A on a date, then replace B with period 1 on that date. Both changes are valid. Deleting A's cancellation currently returns 200 and exposes both A and B in period 1. Targeted API reproduction confirmed all writes succeed and the public `today` array contains the overlap. Template saves likewise validate only the base courses and can invalidate existing date exceptions. Validate the resulting effective timetable before exception deletion and for dates affected by template changes; reject the write transactionally when it introduces conflicts or invalid periods.
+
+3. **[P2] Replaced finance receipts become inaccessible to authorized auditors — `server/files.ts:44-46`.** Finance revisions store `{before, action, request}` (`server/finance.ts:107`), but historical receipt authorization looks for top-level `receiptIds`/`receipt_ids`. After replacing or removing a receipt, even administrators and designated finance committee members cannot fetch the old receipt preserved in the audit history. A targeted Store/ACL reproduction returned `false` for a finance manager and a file present in `finance_versions.data.before.receiptIds`. The early voided branch also excludes receipts referenced by earlier revisions. Resolve both active and voided historical references through the actual revision envelope, keeping these historical files restricted to finance readers.
+
+4. **[P2] Public receipt metadata exposes the private payment linkage — `server/files.ts:54`.** The finance summary intentionally redacts `paymentId` for ordinary members, but a public receipt's returned ID can be passed to `GET /api/files/:id`. The shared metadata projection returns `entityId`, which is the payment ID for payment receipts, plus internal ownership fields. This defeats the explicit requirement to hide identifiers linking public ledger data to personal payment records. Apply a role-aware metadata projection for public receipt readers; retain internal linkage only for authorized finance readers. This finding follows the reachable route/ACL/projection path and was not separately exercised against COS.
+
+## Scoped re-review disposition
+
+Re-reviewed the fixes on 2026-11-06 without broadening the original review scope:
+
+- **Finding 1 — resolved.** Fastify now uses an explicit `TRUST_PROXY` IP/CIDR list, defaulting to loopback, with deployment guidance. Regression tests cover distinct clients behind a trusted proxy and rejection of spoofed forwarding headers from an untrusted peer.
+- **Finding 2 — resolved.** Exception insertion/deletion and weekly-template changes validate the resulting schedule inside their write transaction. An intermediate fix still used the holiday/semester-filtered display array; a targeted review reproduced overlapping courses after toggling a holiday. The final implementation now uses `getEffectiveTimetable` for unsuppressed schedule validation and applies holiday/semester hiding only in the public `getTimetable` projection. Added regressions cover holiday exception insertion/deletion and template collisions outside the semester, including rollback.
+- **Finding 3 — resolved.** Historical receipt ACL reads the `before` snapshot and the matching entry/payment revision type. Authorized auditors retain access after replacement and voiding; ordinary students remain denied.
+- **Finding 4 — resolved.** Receipt metadata omits payment linkage and owner IDs for ordinary readers while retaining them for authorized finance readers. Regression tests exercise both ordinary-member and auditor projections.
+
+Reviewer verification: independently ran `node --import tsx --test tests/timetable.test.ts`; **5/5 passed**, including the two calendar-masking regressions. The main agent reported **36/36 full-suite tests and a successful build**; this re-review did not independently rerun those broader checks. Source and focused tests for the proxy/receipt fixes were inspected in the preceding re-review.
+
+## Current verdict
+
+**No remaining material issue in the reviewed fixes.** The original findings and the calendar-masking follow-up are closed. The core architecture substantially follows the specification: server-side role guards, guest restrictions, finance writes restricted to designated committee members, transactional payment/income updates, idempotent financial revisions, current-user session checks, participant snapshots and submission history are present. The targeted review did not find an unauthenticated internal-data read or a direct ordinary-student finance-write bypass.
+
+COS private-bucket configuration, overwrite-header behavior, browser CORS, and real upload/download/delete integration remain deployment verification items; mocks and source inspection cannot establish that the real bucket is configured correctly. Submission ZIP/snapshot work was still being finalized during the original review and was outside this scoped re-review. This report is not a full release certification.
