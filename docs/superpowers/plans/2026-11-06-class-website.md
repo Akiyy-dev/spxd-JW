@@ -11,7 +11,7 @@
 
 - Exactly admin, committee, student, guest; guest is unauthenticated.
 - Guest sees only login, public introduction and read-only timetable.
-- Finance writes only committee with financeManage; admin reads and grants permission.
+- Administrators automatically have full finance management permission; committee members require financeManage=true. The flag is committee-only, while effective canManage includes admin by role. Student and guest finance permissions are unchanged.
 - All business files and generated exports use COS. Missing COS fails explicitly.
 - No payments, public signup, or real-world personal data in demo fixtures.
 - Passwords and sessions never returned in general APIs. All mutations checked server-side.
@@ -72,4 +72,4 @@ Files: server/db.ts, server/common.ts, server/files.ts, server/catalog.ts, serve
 
 ## Progress
 
-Implementation completed after explicit user approval. All seven modules use the shared API and persistent SQLite storage. Final verification: 36/36 automated tests, TypeScript and Vite production build passed. Browser checks covered four identities, persisted student submission, committee publication, finance record creation, and desktop/mobile layouts. Scoped independent review findings were fixed. Real COS bucket integration remains external configuration work; see docs/verification.md.
+Initial implementation completed after explicit user approval. All seven modules use the shared API and persistent SQLite storage. Initial delivery verification: 36/36 automated tests, TypeScript and Vite production build passed. Browser checks covered four identities, persisted student submission, committee publication, finance record creation, and desktop/mobile layouts. Scoped independent review findings were fixed. These are historical results from before the user-approved administrator finance permission change, not verification of that change. Real COS bucket integration remains external configuration work; see docs/verification.md.

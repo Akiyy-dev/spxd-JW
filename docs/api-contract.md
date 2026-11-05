@@ -8,6 +8,8 @@ All JSON success data is returned directly (no wrapper); errors `{message, code?
 
 `server/common.ts` exports `User` {id,username,name,role:'admin'|'committee'|'student',financeManage:boolean,mustChangePassword:boolean,active:boolean,version:number}, `HttpError(statusCode,message)`, `requireUser(req):User`, `requireManager(req):User`, `requireAdmin(req):User`, `requireFinance(req):User`, `uid()`, `now()`, `parse(zodSchema,input)`, `json(value,fallback)`, `shanghaiDate(date?)`. Decorated request.user:User|null. Mutations must use guard, not front-end role flags.
 
+`User.financeManage` is a committee-only grant, not the effective finance permission. Administrators have full finance management permission automatically, even when `financeManage` is false. `requireFinance` authorizes `role === 'admin' || (role === 'committee' && financeManage)`. Students and guests never gain finance management permission from the flag.
+
 All module registrations `(app:FastifyInstance, db:Store) => void|Promise<void>`. Root modules: registerCatalog, registerTimetable, registerFiles. Finance agent registerFinance. Auth agent registerAuth; tasks agent registerTasks. Auth agent builds `buildApp({db?:Store, storage?:StorageAdapter, logger?:boolean}={})`; registers cookie, global auth hook (loads current user each request), error handler, auth/tasks/finance/catalog/timetable/files. Avoid closing caller-owned db. Storage interface defined in server/files.ts; until present use module imports as agreed. No backend modules modify package.json.
 
 ## Auth and settings
@@ -23,6 +25,8 @@ POST /api/users {username,name,role,password,financeManage?} -> User
 PUT /api/users/:id {name,role,active,financeManage,version} -> User
 POST /api/users/:id/reset-password {password} -> {ok:true}
 POST /api/users/batch {users:[{username,name,role,password}]} -> {count}; atomic and duplicates reject.
+
+Account creation and updates retain `financeManage` only for committee members; other roles store false. Changing away from committee clears the grant. An administrator's finance management permission comes from the admin role and does not require a separate grant.
 
 ## Homework and affairs (same task engine)
 
@@ -57,6 +61,9 @@ PUT /api/class {config?,members?,duties?,version} manager; only display profiles
 ## Finance
 
 GET /api/finance -> `{balance,income,expense,opening,entries:Entry[],fees:Fee[],payments:Payment[],canManage:boolean,canViewAll:boolean}` amounts integer cents.
+
+`canManage` is the server-computed effective permission: true for every administrator and for committee members with `financeManage=true`, false for all other members. `canViewAll` has the same authorized role set. Frontend finance actions use `canManage`, not `User.financeManage` alone. All finance writes, including entries, fee items, payment registration, revisions, voiding, receipt upload/binding and receipt publication changes, require this effective permission. Authorized finance managers can view full records, history and private/historical receipts and export finance data. Ordinary committee members and students retain redacted summaries, their own payment details and published receipts; guests have no finance access.
+
 Entry {id,type:'opening'|'income'|'expense',amount:number,category,description,date,receiptIds:string[],publicReceipt:boolean,paymentId:null|string,voided:boolean,version,createdAt,authorName}.
 Fee {id,title,amount:number,deadline:null|string,userIds:string[],version,createdAt}; Payment {id,feeId,userId,name,amount,date,description,receiptIds:string[],version,voided:boolean}.
 POST /api/finance/entries Entry input + idempotencyKey; PUT /api/finance/entries/:id fields+version+reason; POST /api/finance/entries/:id/void {version,reason}; payment-linked entry read-only.

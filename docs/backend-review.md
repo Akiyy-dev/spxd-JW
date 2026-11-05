@@ -2,6 +2,8 @@
 
 Reviewed 2026-11-06 against the approved design and API contract. Scope: server modules, database, relevant tests and deployment scripts; frontend excluded. No implementation changes made. Existing full test suite was not rerun; findings below use targeted checks.
 
+Historical scope: this review predates the user-approved finance policy change giving every administrator full finance management permission. Its references to committee-only finance writes describe the superseded policy. The original findings, test counts and review evidence below are preserved; this report does not establish a re-review of the new policy. The current rule is admin, or committee with `financeManage=true`; student and guest permissions are unchanged.
+
 ## Original findings (resolved)
 
 The descriptions and line numbers below preserve the original review evidence; they do not describe the current implementation. All four findings, including the calendar-masking follow-up to finding 2, are resolved in the scoped re-review below.
@@ -25,7 +27,7 @@ Re-reviewed the fixes on 2026-11-06 without broadening the original review scope
 
 Reviewer verification: independently ran `node --import tsx --test tests/timetable.test.ts`; **5/5 passed**, including the two calendar-masking regressions. The main agent reported **36/36 full-suite tests and a successful build**; this re-review did not independently rerun those broader checks. Source and focused tests for the proxy/receipt fixes were inspected in the preceding re-review.
 
-## Current verdict
+## Verdict at the time of review
 
 **No remaining material issue in the reviewed fixes.** The original findings and the calendar-masking follow-up are closed. The core architecture substantially follows the specification: server-side role guards, guest restrictions, finance writes restricted to designated committee members, transactional payment/income updates, idempotent financial revisions, current-user session checks, participant snapshots and submission history are present. The targeted review did not find an unauthenticated internal-data read or a direct ordinary-student finance-write bypass.
 

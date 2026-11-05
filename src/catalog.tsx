@@ -205,7 +205,7 @@ export function Accounts({changed}: {changed: () => void}) {
       {notice && <p className="feedback" role="status">{notice}</p>}
       {results && (results.length ? <div className="rows">{results.map(user => <div className="list-row account-row" key={user.id}>
         <span className="avatar">{user.name.slice(0, 1)}</span><span><strong>{user.name}</strong><small>{user.username} · {roleNames[user.role]}</small></span>
-        <div className="badge-group row-tail">{user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
+        <div className="badge-group row-tail">{user.role === 'admin' ? <Badge tone="good"><ShieldCheck size={15}/>全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
         <div className="actions"><button className="btn quiet" onClick={() => setEditor({action: 'edit', user})}><Pencil size={16}/>编辑</button><button className="btn quiet" onClick={() => setEditor({action: 'reset', user})}><KeyRound size={16}/>重置密码</button></div>
       </div>)}</div> : <Empty>没有符合条件的账号。</Empty>)}
     </Panel>
@@ -231,6 +231,7 @@ function AccountEditor({user, close, saved}: {user?: User; close: () => void; sa
         {!user && <Field label="初始密码" wide hint="至少 8 位，成员首次登录时需修改。"><input type="password" name="password" required minLength={8} maxLength={128} autoComplete="new-password"/></Field>}
         {user && <label className="check wide"><input type="checkbox" name="active" defaultChecked={user.active}/>启用账号</label>}
         {role === 'committee' && <label className="check wide"><input type="checkbox" name="financeManage" defaultChecked={user?.financeManage}/>授予班费维护权限</label>}
+        {role === 'admin' && <p className="muted wide">管理员拥有全部管理权限，包括班费维护，无需单独授权。</p>}
       </div>
     </AsyncForm>
   </Modal>

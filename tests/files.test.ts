@@ -10,7 +10,7 @@ const manager:User={...student,id:'m',username:'m',role:'committee'};
 const date = '2026-01-01';
 async function setup(user: User | null, configured = false, overrides: Partial<StorageAdapter> = {}) {
   const db = createStore();
-  for (const u of [student, manager]) {
+  for (const u of [student, manager, administrator]) {
     db.run('INSERT INTO users(id,username,name,password_hash,role,created_at) VALUES(?,?,?,?,?,?)',
       u.id, u.username, u.name, 'x', u.role, date);
   }
@@ -39,7 +39,71 @@ test('actual size is verified and foreign file cannot be attached',async()=>{con
 test('ready private receipt cannot be signed by a student',async()=>{const{app,db}=await setup(student,true);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)','receipt','r.pdf',20,'application/pdf','private/r','receipt','entry','m','ready','2026-01-01');assert.equal((await app.inject({method:'POST',url:'/api/files/receipt/download',payload:{}})).statusCode,403);await app.close();db.close()});
 
 const financeManager: User = { ...manager, financeManage: true };
-const administrator: User = { ...manager, role: 'admin' };
+const administrator: User = { ...manager, id: 'a', username: 'a', name: '管理员', role: 'admin' };
+
+for (const entity of ['entry', 'payment'] as const) {
+  test(`administrators without a finance flag upload, confirm and bind private receipts to a ${entity}`, async t => {
+    const { app, db, setUser } = await setup(administrator, true);
+    t.after(async () => { await app.close(); db.close(); });
+    const upload = await app.inject({ method: 'POST', url: '/api/files/upload',
+      payload: { name: 'receipt.pdf', size: 20, mime: 'application/pdf', purpose: 'receipt' } });
+    assert.equal(upload.statusCode, 200, upload.body);
+    const fileId = upload.json().fileId;
+    const fileUrl = '/api/files/' + fileId;
+    setUser(financeManager);
+    assert.equal((await app.inject({ method: 'POST', url: fileUrl + '/confirm' })).statusCode, 404);
+    setUser(administrator);
+    const confirmed = await app.inject({ method: 'POST', url: fileUrl + '/confirm' });
+    assert.equal(confirmed.statusCode, 200, confirmed.body);
+    assert.equal(confirmed.json().status, 'ready');
+    assert.equal(confirmed.json().ownerId, administrator.id);
+    setUser(financeManager);
+    assert.equal((await app.inject({ method: 'POST', url: fileUrl + '/download' })).statusCode, 403);
+    const entryInput = { type: 'expense', amount: 100, category: '其他', description: '', date,
+      receiptIds: [fileId], publicReceipt: false, idempotencyKey: randomUUID() };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/finance/entries', payload: entryInput })).statusCode, 403);
+    setUser(administrator);
+    let entityId: string;
+    if (entity === 'entry') {
+      const created = await app.inject({ method: 'POST', url: '/api/finance/entries', payload: entryInput });
+      assert.equal(created.statusCode, 200, created.body);
+      entityId = created.json().id;
+    } else {
+      const seeded = seedPaymentReceipt(db);
+      entityId = seeded.paymentId;
+      const updated = await app.inject({ method: 'PUT', url: '/api/finance/payments/' + entityId,
+        payload: { receiptIds: [seeded.fileId, fileId], publicReceipt: false, version: 1, reason: '补充凭证' } });
+      assert.equal(updated.statusCode, 200, updated.body);
+      assert.deepEqual(updated.json().receiptIds, [seeded.fileId, fileId]);
+    }
+    const stored = db.get('SELECT entity_id,expires_at FROM files WHERE id=?', fileId);
+    assert.equal(stored?.entity_id, entityId);
+    assert.equal(stored?.expires_at, null);
+    assert.equal((await app.inject({ method: 'POST', url: fileUrl + '/download' })).statusCode, 200);
+    // Administrator access does not let a receipt be rebound to another record.
+    assert.equal((await app.inject({ method: 'POST', url: '/api/finance/entries',
+      payload: { ...entryInput, idempotencyKey: randomUUID() } })).statusCode, 403);
+    for (const member of [manager, student, { ...student, financeManage: true }]) {
+      setUser(member);
+      assert.equal((await app.inject({ method: 'POST', url: fileUrl + '/download' })).statusCode, 403);
+      assert.equal((await app.inject({ method: 'GET', url: fileUrl })).statusCode, 403);
+    }
+  });
+}
+
+test('unauthorized committee members and students cannot upload or confirm finance receipts', async t => {
+  const { app, db, setUser } = await setup(manager, true);
+  t.after(async () => { await app.close(); db.close(); });
+  for (const member of [manager, student, { ...student, financeManage: true }]) {
+    setUser(member);
+    const payload = { name: 'receipt.pdf', size: 20, mime: 'application/pdf', purpose: 'receipt' };
+    assert.equal((await app.inject({ method: 'POST', url: '/api/files/upload', payload })).statusCode, 403);
+    const id = randomUUID();
+    db.run("INSERT INTO files(id,name,size,mime,object_key,purpose,owner_id,status,created_at,expires_at) VALUES(?,'receipt.pdf',20,'application/pdf',?,'receipt',?,'pending',?,?)",
+      id, id, member.id, date, new Date(Date.now() + 60000).toISOString());
+    assert.equal((await app.inject({ method: 'POST', url: '/api/files/' + id + '/confirm' })).statusCode, 403);
+  }
+});
 
 function seedPaymentReceipt(db: ReturnType<typeof createStore>) {
   const paymentId = randomUUID();

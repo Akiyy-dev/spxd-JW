@@ -127,6 +127,101 @@ test('ledger totals include one active opening, independent income and expenses'
   assert.deepEqual([totalOpening, income, expense, balance], [12000, 1200, 2100, 11100]);
 });
 
+test('administrators without a finance flag maintain fees, entries and payments with audit and replay protection', async t => {
+  const { call, payment, users, db, student } = fixture(t);
+  const adminCall = (method: 'GET' | 'POST' | 'PUT', path: string, payload?: object) => call(method, path, payload, '管理员');
+  const feeInput = { title: '活动费用', amount: 2500, deadline: null, userIds: [student] };
+  const fee = await adminCall('POST', '/fees', feeInput);
+  assert.equal(fee.status, 200, JSON.stringify(fee.data));
+  const feeUpdate = { ...feeInput, amount: 3000, version: 1 };
+  const revisedFee = await adminCall('PUT', '/fees/' + fee.data.id, feeUpdate);
+  assert.equal(revisedFee.status, 200);
+  assert.equal(revisedFee.data.amount, 3000);
+  assert.equal(revisedFee.data.version, 2);
+  assert.deepEqual(await adminCall('PUT', '/fees/' + fee.data.id, feeUpdate), revisedFee);
+
+  for (const type of ['opening', 'income', 'expense']) {
+    const input = { type, amount: 1000, category: '其他', description: '', date,
+      receiptIds: [], publicReceipt: false, idempotencyKey: randomUUID() };
+    const entry = await adminCall('POST', '/entries', input);
+    assert.equal(entry.status, 200, JSON.stringify(entry.data));
+    assert.deepEqual(await adminCall('POST', '/entries', input), entry);
+    assert.equal((await call('POST', '/entries', input)).status, 409);
+    const revision = { amount: 900, version: 1, reason: '核对金额' };
+    const updated = await adminCall('PUT', '/entries/' + entry.data.id, revision);
+    assert.equal(updated.status, 200);
+    assert.equal(updated.data.amount, 900);
+    assert.equal(updated.data.version, 2);
+    assert.deepEqual(await adminCall('PUT', '/entries/' + entry.data.id, revision), updated);
+    const voidInput = { version: 2, reason: '取消记录' };
+    const voided = await adminCall('POST', '/entries/' + entry.data.id + '/void', voidInput);
+    assert.equal(voided.status, 200);
+    assert.equal(voided.data.voided, true);
+    assert.deepEqual(await adminCall('POST', '/entries/' + entry.data.id + '/void', voidInput), voided);
+  }
+
+  const input = payment(fee.data.id);
+  const created = await adminCall('POST', '/payments', input);
+  assert.equal(created.status, 200, JSON.stringify(created.data));
+  assert.deepEqual(await adminCall('POST', '/payments', input), created);
+  assert.equal((await call('POST', '/payments', input)).status, 409);
+  const revision = { amount: 750, version: 1, reason: '核对实收' };
+  const corrected = await adminCall('PUT', '/payments/' + created.data.id, revision);
+  assert.equal(corrected.status, 200);
+  assert.equal(corrected.data.amount, 750);
+  assert.deepEqual(await adminCall('PUT', '/payments/' + created.data.id, revision), corrected);
+  let summary = (await adminCall('GET', '')).data;
+  assert.equal(summary.balance, 750);
+  const linked = summary.entries.find((entry: { paymentId: string }) => entry.paymentId === created.data.id);
+  assert.equal(linked.amount, 750);
+  assert.equal(linked.version, 2);
+  const voidInput = { version: 2, reason: '退回缴费' };
+  const voided = await adminCall('POST', '/payments/' + created.data.id + '/void', voidInput);
+  assert.equal(voided.status, 200);
+  assert.equal(voided.data.voided, true);
+  assert.deepEqual(await adminCall('POST', '/payments/' + created.data.id + '/void', voidInput), voided);
+  summary = (await adminCall('GET', '')).data;
+  assert.equal(summary.balance, 0);
+  assert.equal(summary.entries.find((entry: { id: string }) => entry.id === linked.id).voided, true);
+  assert.equal(summary.canManage, true);
+  const history = await adminCall('GET', '/history');
+  assert.equal(history.status, 200);
+  assert.equal(history.data.length, 11);
+  assert.ok(history.data.every((row: { actorId: string }) => row.actorId === users.get('管理员')!.id));
+  assert.equal(db.get('SELECT finance_manage FROM users WHERE id=?', users.get('管理员')!.id)?.finance_manage, 0);
+});
+
+test('committee members without authorization and students cannot mutate finance records', async t => {
+  const { call, fee, payment, users, student } = fixture(t);
+  const feeId = await fee();
+  const input = { type: 'expense', amount: 500, category: '其他', description: '', date,
+    receiptIds: [], publicReceipt: false, idempotencyKey: randomUUID() };
+  const entry = await call('POST', '/entries', input);
+  const paid = await call('POST', '/payments', payment(feeId));
+  assert.equal(entry.status, 200);
+  assert.equal(paid.status, 200);
+  // A flag cannot turn a student into a finance manager.
+  users.get('甲同学')!.financeManage = true;
+  const requests: Array<['POST' | 'PUT', string, object]> = [
+    ['POST', '/fees', { title: '活动费用', amount: 2500, deadline: null, userIds: [student] }],
+    ['PUT', '/fees/' + feeId, { title: '活动费用', amount: 3000, deadline: null, userIds: [student], version: 1 }],
+    ['POST', '/entries', { ...input, idempotencyKey: randomUUID() }],
+    ['PUT', '/entries/' + entry.data.id, { amount: 900, version: 1, reason: '更正' }],
+    ['POST', '/entries/' + entry.data.id + '/void', { version: 1, reason: '取消' }],
+    ['POST', '/payments', payment(feeId)],
+    ['PUT', '/payments/' + paid.data.id, { amount: 900, version: 1, reason: '更正' }],
+    ['POST', '/payments/' + paid.data.id + '/void', { version: 1, reason: '取消' }],
+  ];
+  for (const who of ['班委', '甲同学', '乙同学']) {
+    for (const [method, path, payload] of requests) {
+      assert.equal((await call(method, path, payload, who)).status, 403, who + ' ' + method + ' ' + path);
+    }
+    const summary = (await call('GET', '', undefined, who)).data;
+    assert.equal(summary.canManage, false);
+    assert.equal(summary.canViewAll, false);
+  }
+});
+
 test('finance roles enforce write access and redact individual payments from the class ledger', async t => {
   const { call, fee, payment, db, users, student, other } = fixture(t, testStorage());
   const feeId = await fee();
@@ -148,7 +243,7 @@ test('finance roles enforce write access and redact individual payments from the
     assert.deepEqual(entry.receiptIds, []);
   }
   const admin = (await call('GET', '', undefined, '管理员')).data;
-  assert.equal(admin.canManage, false);
+  assert.equal(admin.canManage, true);
   assert.equal(admin.canViewAll, true);
   assert.deepEqual(admin.payments.find((row: { id: string }) => row.id === first.data.id).receiptIds, [receiptId]);
   assert.equal((await call('PUT', '/payments/' + first.data.id, { publicReceipt: true, version: 1, reason: '公示凭证' })).status, 200);
@@ -158,7 +253,8 @@ test('finance roles enforce write access and redact individual payments from the
   assert.equal((await call('POST', receiptDownload, {}, '乙同学')).status, 200);
   assert.equal((await call('PUT', '/payments/' + first.data.id, { receiptIds: [], version: 2, reason: '移除凭证' })).status, 200);
   assert.equal((await call('POST', receiptDownload, {}, '乙同学')).status, 403);
-  for (const who of ['管理员', '班委', '甲同学']) {
+  assert.equal((await call('POST', '/payments', payment(feeId), '管理员')).status, 200);
+  for (const who of ['班委', '甲同学']) {
     assert.equal((await call('POST', '/payments', payment(feeId), who)).status, 403);
   }
   assert.equal((await call('GET', '/history', undefined, '甲同学')).status, 403);

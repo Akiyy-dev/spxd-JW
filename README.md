@@ -34,7 +34,7 @@ npm run build
 npm start
 ```
 
-setup 交互输入管理员账号和名称，生成一次性初始密码，首次登录强制修改；也可通过受控运行环境提供 ADMIN_USERNAME、ADMIN_NAME、ADMIN_PASSWORD。管理员创建班委和学生账号，仅给指定班委授予班费权限。管理员本人不进行记账。
+setup 交互输入管理员账号和名称，生成一次性初始密码，首次登录强制修改；也可通过受控运行环境提供 ADMIN_USERNAME、ADMIN_NAME、ADMIN_PASSWORD。管理员创建班委和学生账号，并为指定班委授予班费维护标记 `financeManage`。管理员自动拥有完整班费管理权限，无需该标记；班委只有在 `financeManage=true` 时才能维护班费。普通班委、学生和游客的权限不变。
 
 正式环境设置 NODE_ENV=production、APP_ORIGIN=https://你的域名，并在反向代理配置 HTTPS，将同域页面与 /api 请求转发到 Node 服务。运行账号只需本项目和数据目录权限。服务默认绑定127.0.0.1，需容器访问时显式设置 HOST。数据库须放持久化磁盘，不放在临时容器层。
 
@@ -75,4 +75,4 @@ npm run build
 
 设计与 API 约定位于 docs/。`data/`、`.env`、依赖、构建产物和运行凭据不会进入版本控制。uuid 的兼容修复版本通过 npm overrides 固定到11系，ExcelJS使用的v4接口已验证；避免直接降级整个表格库。
 
-本次测试、浏览器操作及配置限制记录在 [验收记录](docs/verification.md)，页面截图位于 `docs/screenshots/`。
+测试、浏览器操作及配置限制记录在 [验收记录](docs/verification.md)，其中分别记录管理员班费权限调整和第一版初次验收；初次页面截图位于 `docs/screenshots/`。

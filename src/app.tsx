@@ -190,7 +190,7 @@ function Account({user, update}: {user: User; update: (user: User) => void}) {
   const [saved, setSaved] = useState(false)
   return <div className="stack">
     <PageTitle label="设置" title="个人账号" detail="查看当前登录身份，管理账号密码。" />
-    <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
+    <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
     <Panel title="修改密码" detail={user.mustChangePassword ? '首次登录或密码被重置后，请先更新密码。' : '请使用长度至少 8 位的新密码。'}>
       {saved && <p role="status" className="feedback">密码已更新。</p>}
       <AsyncForm button="更新密码" submit={async data => {

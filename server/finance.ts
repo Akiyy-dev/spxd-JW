@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { conflict, dateSchema, HttpError, json, now, parse, requireFinance, requireUser, uid, versionSchema, type User } from './common.ts';
+import { canManageFinance, conflict, dateSchema, HttpError, json, now, parse, requireFinance, requireUser, uid, versionSchema, type User } from './common.ts';
 import type { Store } from './db.ts';
 import { bindAttachments, createExport, validateAttachments } from './files.ts';
 
@@ -82,8 +82,7 @@ const getPayment = (db: Store, id: string) => paymentView(found(db.get<PaymentRo
 const getFee = (db: Store, id: string) => feeView(found(db.get<FeeRow>(feesSql + ' WHERE id=?', id)));
 const linkedEntry = (db: Store, paymentId: string) => entryView(found(db.get<EntryRow>(entriesSql + ' WHERE e.payment_id=?', paymentId)));
 const getId = (req: FastifyRequest) => parse(z.object({ id: idSchema }), req.params).id;
-const canManage = (user: User) => user.role === 'committee' && user.financeManage;
-const canViewAll = (user: User) => user.role === 'admin' || canManage(user);
+const canViewAll = canManageFinance;
 
 function requireFinanceReader(req: FastifyRequest) {
   const user = requireUser(req);
@@ -181,7 +180,7 @@ function readFinance(db: Store, user: User) {
     ...(entry.paymentId && { paymentId: null, category: '班费收入', description: '班费收入', authorName: '' }),
     receiptIds: entry.publicReceipt ? entry.receiptIds : [],
   }));
-  return { ...ledgerTotals(ledger), entries, fees, payments, canManage: canManage(user), canViewAll: full };
+  return { ...ledgerTotals(ledger), entries, fees, payments, canManage: canManageFinance(user), canViewAll: full };
 }
 
 function insertEntry(db: Store, user: User, id: string, fields: z.infer<typeof entryFields>, key: string | null, paymentId: string | null) {

@@ -1,7 +1,7 @@
 import type {FastifyInstance} from 'fastify';
 import type {Store} from './db.ts';
 import type {User} from './common.ts';
-import {HttpError,json,now,parse,requireUser,uid} from './common.ts';
+import {canManageFinance,HttpError,json,now,parse,requireUser,uid} from './common.ts';
 import {z} from 'zod';
 import COS from 'cos-nodejs-sdk-v5';
 import JSZip from 'jszip';
@@ -23,9 +23,9 @@ export class CosStorage implements StorageAdapter {
 }
 const types:Record<string,string>={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.txt':'text/plain','.csv':'text/csv','.zip':'application/zip','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
 const isManager=(u:User)=>u.role==='admin'||u.role==='committee';
-const financeRead=(u:User)=>u.role==='admin'||(u.role==='committee'&&u.financeManage);
+const financeRead=canManageFinance;
 function uploadAccess(db:Store,u:User,purpose:string,entityId?:string|null){
-  if(purpose==='receipt'){if(u.role!=='committee'||!u.financeManage)throw new HttpError(403,'仅指定班委可上传班费凭证');return}
+  if(purpose==='receipt'){if(!canManageFinance(u))throw new HttpError(403,'仅管理员或指定班委可上传班费凭证');return}
   if(purpose==='submission'){const task=db.get('SELECT * FROM tasks WHERE id=?',entityId??'');if(!task||task.status!=='published'||!task.requires_submission)throw new HttpError(400,'作业或事务当前不可提交');if(u.role==='admin'||!db.get("SELECT 1 FROM participants WHERE task_id=? AND user_id=? AND status='required'",task.id,u.id))throw new HttpError(403,'你不在本次提交名单中');if(task.deadline&&task.deadline<now()&&!task.allow_late)throw new HttpError(400,'已超过提交截止时间');return}
   if(!isManager(u))throw new HttpError(403,'仅管理员或班委可以上传该资料');
   if(purpose==='task-attachment'&&entityId&&!db.get('SELECT id FROM tasks WHERE id=?',entityId))throw new HttpError(404,'作业不存在');

@@ -30,7 +30,7 @@ export function Finance({user}: {user: User}) {
   const members = useQuery<LedgerMember[]>(needsMembers && data?.canViewAll ? base + '/members' : null)
   const close = () => setEditor(undefined)
   const saved = () => {close(); query.reload(); setNotice('班费记录已保存。')}
-  const canManage = !!data?.canManage && user.role === 'committee' && user.financeManage
+  const canManage = !!data?.canManage
   const entries = data?.entries.filter(entry => (!type || entry.type === type) && (!from || entry.date >= from) && (!until || entry.date <= until) && (showVoided || !entry.voided))
   const feeTitle = (id: string) => data?.fees.find(item => item.id === id)?.title || '缴费事项'
   return <div className="stack">
