@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, BookOpen, ClipboardList, Clock3, History, Pencil, Plus, UsersRound } from 'lucide-react'
 import { api, datetimeInput, datetimeISO, timestamp, useQuery } from './api'
+import { createId } from './id'
 import { AsyncForm, Badge, checked, Empty, ExportButton, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 import type { ClassData, Field as TaskField, FieldType, Participant, Submission, Task, TaskKind, User } from './types'
 
@@ -164,7 +165,7 @@ function TaskEditor({task, kind, base, close, saved}: {task?: Task; kind: TaskKi
               </div>
             </div>
           })}
-          <button className="btn" type="button" onClick={() => setFields([...fields, {id: crypto.randomUUID(), label: '', type: 'text', required: false}])}><Plus size={17}/>添加表单字段</button>
+          <button className="btn" type="button" onClick={() => setFields([...fields, {id: createId(), label: '', type: 'text', required: false}])}><Plus size={17}/>添加表单字段</button>
         </section>}
       </div>
     </AsyncForm>

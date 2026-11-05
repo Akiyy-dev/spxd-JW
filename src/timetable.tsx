@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, MapPin, Pencil, Plus, Trash2 } from 'lucide-react'
 import { api, dateCN, dateLabel, errorMessage, useQuery } from './api'
+import { createId } from './id'
 import { AsyncForm, Badge, Empty, Feedback, Field, Modal, PageTitle, Panel, val } from './ui'
 import type { Course, Period, Timetable } from './types'
 
@@ -159,7 +160,7 @@ function TemplateEditor({timetable, close, saved}: {timetable: Timetable; close:
         </div>
         <div className="editor-section"><h3>固定课程</h3>
           {courses.map((course, index) => <div className="nested-panel" key={course.id}><div className="split"><strong>课程 {index + 1}</strong><button className="btn quiet icon" type="button" aria-label={`移除课程 ${index + 1}`} onClick={() => setCourses(courses.filter(item => item.id !== course.id))}><Trash2 size={17}/></button></div><CourseFields course={course} periods={periods} change={next => setCourses(courses.map(item => item.id === next.id ? next : item))}/></div>)}
-          <button type="button" className="btn" disabled={!periods.length} onClick={() => setCourses([...courses, {id: crypto.randomUUID(), name: '', teacher: '', room: '', color: colors[0].value, day: dayOfWeek(timetable.date), startPeriod: periods[0].id, endPeriod: periods[0].id, notes: ''}])}><Plus size={17}/>添加课程</button>
+          <button type="button" className="btn" disabled={!periods.length} onClick={() => setCourses([...courses, {id: createId(), name: '', teacher: '', room: '', color: colors[0].value, day: dayOfWeek(timetable.date), startPeriod: periods[0].id, endPeriod: periods[0].id, notes: ''}])}><Plus size={17}/>添加课程</button>
         </div>
       </div>
     </AsyncForm>

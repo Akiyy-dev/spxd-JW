@@ -2,6 +2,14 @@
 
 日期：2026-11-06。代码位于 `D:/spxd_web`，演示库与正式初始化库分离。
 
+## HTTP 环境财务弹窗白屏（2026-11-06）
+
+- 根因：新增及修订账目、实缴登记的组件初始化直接调用 `crypto.randomUUID()`；该接口只在安全上下文开放，普通公网 HTTP 页面中不可用。localhost 被浏览器视为可信来源，因此此前的本地验收没有覆盖此差异。[Web Crypto 规范](https://w3c.github.io/webcrypto/#crypto-interface)
+- 复现：在本地演示页面临时移除 `randomUUID`、保留 `getRandomValues` 后点击“新增账目”，页面根节点变空，控制台报 `TypeError: crypto.randomUUID is not a function`。刷新恢复测试环境；未更改浏览器安全设置。
+- 修复：统一使用 `createId()`，在缺少原生 UUID 方法时以 `getRandomValues` 生成 UUID v4；同时覆盖账目、实缴、表单字段、课程和值日安排五处调用。财务弹窗仍在挂载时生成一次幂等键。
+- 回归：先运行原生调用版本，兼容性测试因同一 TypeError 失败；修复后 `npm test` 43 项全部通过，TypeScript 检查及 Vite 生产构建通过，独立代码复核未发现需修复问题。
+- 浏览器在相同模拟条件下验证管理员新增账目、修订弹窗和实缴登记弹窗，以及指定财务班委的新增账目弹窗。管理员保存 0.02 元演示支出“HTTP兼容验收”，无真实收支。截图为本地 `test-results/finance-http-modal.jpg`；验证结束恢复原生浏览器接口。本次未访问或修改生产数据库。
+
 ## 管理员班费权限调整（2026-11-06）
 
 - 用户确认管理员拥有全部权限；班费权限统一为管理员，或 `financeManage=true` 的班委。管理员不需要修改数据库中的授权标记。

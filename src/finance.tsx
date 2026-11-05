@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, Banknote, History, Plus, Wallet } from 'lucide-react'
 import { api, dateCN, timestamp, useQuery } from './api'
+import { createId } from './id'
 import { AsyncForm, Badge, checked, Empty, ExportButton, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 import type { Entry, Fee, Ledger, Payment, User } from './types'
 
@@ -127,7 +128,7 @@ function Reason() {
 
 function EntryEditor({entry, hasOpening, close, saved}: {entry?: Entry; hasOpening: boolean; close: () => void; saved: () => void}) {
   const [receipts, setReceipts] = useState(entry?.receiptIds || [])
-  const [idempotencyKey] = useState(() => crypto.randomUUID())
+  const [idempotencyKey] = useState(createId)
   return <Modal title={entry ? '修订账目' : '新增账目'} close={close}>
     <AsyncForm cancel={close} submit={async form => {
       const body = {type: val(form, 'type'), amount: amountCents(val(form, 'amount')), category: val(form, 'category'), description: val(form, 'description'), date: val(form, 'date'), receiptIds: receipts, publicReceipt: checked(form, 'publicReceipt')}
@@ -180,7 +181,7 @@ function PaymentEditor({payment, initialFee, fees, members, close, saved}: {paym
   const [feeId, setFeeId] = useState(payment?.feeId || initialFee?.id || fees[0]?.id || '')
   const [payer, setPayer] = useState(payment?.userId || '')
   const [receipts, setReceipts] = useState(payment?.receiptIds || [])
-  const [idempotencyKey] = useState(() => crypto.randomUUID())
+  const [idempotencyKey] = useState(createId)
   const selectedFee = fees.find(fee => fee.id === feeId)
   const selectable = members.filter(member => selectedFee?.userIds.includes(member.id))
   const historical = payment?.feeId === feeId && !selectable.some(member => member.id === payment?.userId)

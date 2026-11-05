@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Archive, ExternalLink, FileText, History, KeyRound, Pencil, Plus, Search, ShieldCheck, Trash2, UserRoundPlus } from 'lucide-react'
 import { api, dateCN, dateLabel, timestamp, useQuery } from './api'
+import { createId } from './id'
 import { roleNames, type ClassData, type Duty, type Member, type Resource, type Role, type User } from './types'
 import { AsyncForm, Badge, checked, Empty, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 
@@ -171,7 +172,7 @@ function DutyEditor({data, close, saved}: {data: ClassData; close: () => void; s
         return <div className="nested-panel" key={duty.id}><div className="split"><strong>安排 {index + 1}</strong><button type="button" className="btn quiet icon" aria-label={`移除安排 ${index + 1}`} onClick={() => setDuties(duties.filter(item => item.id !== duty.id))}><Trash2 size={17}/></button></div>
           <div className="form-grid"><Field label="日期"><input type="date" required value={duty.date} onChange={event => change({date: event.target.value})}/></Field><Field label="值日区域"><input required value={duty.area} onChange={event => change({area: event.target.value})}/></Field><Field label="负责成员（姓名以顿号分隔）" wide><input value={duty.nameText} onChange={event => change({nameText: event.target.value})}/></Field></div>
         </div>
-      })}<button type="button" className="btn" onClick={() => setDuties([...duties, {id: crypto.randomUUID(), date: dateCN(), area: '', names: [], nameText: ''}])}><Plus size={17}/>添加安排</button></div>
+      })}<button type="button" className="btn" onClick={() => setDuties([...duties, {id: createId(), date: dateCN(), area: '', names: [], nameText: ''}])}><Plus size={17}/>添加安排</button></div>
     </AsyncForm>
   </Modal>
 }
