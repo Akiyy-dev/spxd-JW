@@ -10,7 +10,9 @@ export type ClassData = {config: Config; members: Member[]; duties: Duty[]; vers
 export type Period = {id: number; label: string; start: string; end: string}
 export type Course = {id: string; name: string; teacher: string; room: string; day: number; startPeriod: number; endPeriod: number; color: string; notes: string}
 export type Exception = {id: string; date: string; courseId: string; action: 'cancel' | 'replace'; course?: Course}
-export type Timetable = {date: string; effectiveDate: string; version: number; periods: Period[]; courses: Course[]; exceptions: Exception[]; config: Pick<Config, 'semesterStart' | 'semesterEnd' | 'holidays'>; today: Course[]}
+export type TimetableTemplate = {id: string; name: string; effectiveDate: string | null; version: number; periods: Period[]; courses: Course[]}
+export type TimetableTemplates = {templates: TimetableTemplate[]; activeTemplateId: string | null; selectionVersion: number}
+export type Timetable = {date: string; effectiveDate: string | null; templateId: string | null; templateName: string; selectionVersion: number; version: number; periods: Period[]; courses: Course[]; exceptions: Exception[]; config: Pick<Config, 'semesterStart' | 'semesterEnd' | 'holidays'>; today: Course[]}
 
 export type FieldType = 'text' | 'textarea' | 'select' | 'multiselect' | 'file'
 export type Field = {id: string; label: string; type: FieldType; required: boolean; options?: string[]}

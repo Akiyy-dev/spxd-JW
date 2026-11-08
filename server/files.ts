@@ -1,4 +1,4 @@
-import type {FastifyInstance} from 'fastify';
+import type {FastifyInstance,FastifyReply} from 'fastify';
 import type {Store} from './db.ts';
 import type {User} from './common.ts';
 import {canManageFinance,HttpError,json,now,parse,requireUser,uid} from './common.ts';
@@ -22,6 +22,11 @@ export class CosStorage implements StorageAdapter {
   async remove(key:string){await this.call('deleteObject',this.params(key));}
 }
 const types:Record<string,string>={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.txt':'text/plain','.csv':'text/csv','.zip':'application/zip','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
+const previewTypes = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp']);
+const maxPreviewSize = 20 * 1024 * 1024;
+function previewable(f: any) {
+  return previewTypes.has(f.mime) && types[extname(f.name).toLowerCase()] === f.mime;
+}
 const isManager=(u:User)=>u.role==='admin'||u.role==='committee';
 const financeRead=canManageFinance;
 function uploadAccess(db:Store,u:User,purpose:string,entityId?:string|null){
@@ -71,14 +76,51 @@ export function validateAttachments(db:Store,user:User,ids:string[],purpose:stri
 }
 export function bindAttachments(db:Store,ids:string[],entityId:string){for(const id of ids)db.run('UPDATE files SET entity_id=?,expires_at=NULL WHERE id=?',entityId,id);}
 function sniff(f:any,b:Buffer){const ext=extname(f.name).toLowerCase();if(ext==='.pdf')return b.subarray(0,5).toString()==='%PDF-';if(ext==='.png')return b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));if(['.jpg','.jpeg'].includes(ext))return b[0]===255&&b[1]===216;if(ext==='.webp')return b.subarray(0,4).toString()==='RIFF'&&b.subarray(8,12).toString()==='WEBP';if(['.zip','.docx','.xlsx','.pptx'].includes(ext))return b[0]===80&&b[1]===75;if(['.doc','.xls','.ppt'].includes(ext))return b.subarray(0,4).equals(Buffer.from([208,207,17,224]));return !b.includes(0);}
+async function previewContent(db: Store, f: any) {
+  if (!previewable(f)) throw new HttpError(415, '此文件类型暂不支持预览，请下载后打开');
+  if (f.size <= 0 || f.size > maxPreviewSize) throw new HttpError(413, '预览文件须非空且不超过 20 MB');
+  const storage = neededStorage(db);
+  if (!storage.read) throw new HttpError(503, '当前存储不支持预览，请下载后打开');
+  let bytes: Buffer;
+  try { bytes = await storage.read(f.object_key); }
+  catch { throw new HttpError(502, '附件读取失败，请稍后重试或下载'); }
+  if (bytes.length !== f.size || !sniff(f, bytes)) throw new HttpError(502, '附件内容校验失败，请重新上传');
+  return bytes;
+}
+function sendPreview(reply: FastifyReply, f: any, bytes: Buffer) {
+  // Fetch into a browser Blob for the viewer; direct API navigation must not execute uploads.
+  return reply.type(f.mime)
+    .header('Cache-Control', 'private, no-store')
+    .header('X-Content-Type-Options', 'nosniff')
+    .header('Content-Security-Policy', "default-src 'none'; sandbox")
+    .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(f.name.replace(/[\r\n]/g, ''))}`)
+    .send(bytes);
+}
 export function registerFiles(app:FastifyInstance,db:Store,storage:StorageAdapter=new CosStorage()){
   stores.set(db,storage);
   app.get('/api/status',async req=>{requireUser(req);return {cosConfigured:storage.configured}});
   app.post('/api/files/upload',async req=>{const u=requireUser(req),v=parse(z.object({name:z.string().trim().min(1).max(180).refine(s=>!/[\\/\x00-\x1f]/.test(s),'文件名无效'),size:z.number().int().positive().max(20*1024*1024),mime:z.string().max(200).default(''),purpose:z.enum(['task-attachment','submission','resource','receipt','avatar','class-photo']),entityId:z.string().optional()}),req.body);uploadAccess(db,u,v.purpose,v.entityId);const s=neededStorage(db),ext=extname(v.name).toLowerCase(),mime=types[ext];if(!mime)throw new HttpError(400,'不支持此文件类型');if(['avatar','class-photo'].includes(v.purpose)&&!mime.startsWith('image/'))throw new HttpError(400,'请选择图片');const id=uid(),key=`classroom/${v.purpose}/${uid()}${ext}`,signed=await s.uploadUrl(key,mime,v.size);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',id,v.name,v.size,mime,key,v.purpose,v.entityId??null,u.id,'pending',now(),new Date(Date.now()+86400000+600000).toISOString());return{fileId:id,...signed}});
   app.post<{Params:{id:string}}>('/api/files/:id/confirm',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f||f.owner_id!==u.id)throw new HttpError(404,'上传记录不存在');uploadAccess(db,u,f.purpose,f.entity_id);if(f.status==='ready')return metadata(f);if(f.status!=='pending'||f.expires_at<now())throw new HttpError(400,'上传记录已过期');const s=neededStorage(db),head=await s.head(f.object_key);if(head.size!==f.size||head.mime!==f.mime)throw new HttpError(400,'实际文件大小或类型与声明不符');if(!sniff(f,await s.readHead(f.object_key)))throw new HttpError(400,'文件内容与类型不符');uploadAccess(db,u,f.purpose,f.entity_id);const result=db.run("UPDATE files SET status='ready' WHERE id=? AND status='pending'",f.id);if(!result.changes)throw new HttpError(409,'文件状态已改变，请重新上传');return metadata({...f,status:'ready'})});
   app.get<{Params:{id:string}}>('/api/files/:id',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f)throw new HttpError(404,'文件不存在');if(!canReadFile(db,u,f))throw new HttpError(403,'无权读取此文件');return metadata(f,f.purpose!=='receipt'||financeRead(u))});
-  app.post<{Params:{id:string}}>('/api/files/:id/download',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f)throw new HttpError(404,'文件不存在');if(!canReadFile(db,u,f))throw new HttpError(403,'无权下载此文件');const s=neededStorage(db),v=parse(z.object({preview:z.boolean().optional()}),req.body??{}),previewAvailable=!!process.env.COS_PREVIEW_DOMAIN&&(f.mime==='application/pdf'||f.mime.startsWith('image/'));return{url:await s.downloadUrl(f.object_key,f.name,!!v.preview&&previewAvailable),previewAvailable}});
-  app.get<{Params:{id:string}}>('/api/public/photo/:id',async(req,reply)=>{const f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f||f.purpose!=='class-photo'||!canReadFile(db,null,f))throw new HttpError(404,'图片不存在');return reply.redirect(await neededStorage(db).downloadUrl(f.object_key,f.name,true))});
+  app.post<{Params:{id:string}}>('/api/files/:id/download',async req=>{
+    const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
+    if(!f)throw new HttpError(404,'文件不存在');
+    if(!canReadFile(db,u,f))throw new HttpError(403,'无权下载此文件');
+    const s=neededStorage(db),v=parse(z.object({preview:z.boolean().optional()}),req.body??{});
+    const previewAvailable=previewable(f)&&f.size>0&&f.size<=maxPreviewSize&&!!s.read;
+    return {url:v.preview&&previewAvailable?`/api/files/${encodeURIComponent(f.id)}/preview`:await s.downloadUrl(f.object_key,f.name),previewAvailable};
+  });
+  app.get<{Params:{id:string}}>('/api/files/:id/preview',async(req,reply)=>{
+    const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
+    if(!f)throw new HttpError(404,'文件不存在');
+    if(!canReadFile(db,u,f))throw new HttpError(403,'无权预览此文件');
+    return sendPreview(reply,f,await previewContent(db,f));
+  });
+  app.get<{Params:{id:string}}>('/api/public/photo/:id',async(req,reply)=>{
+    const f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
+    if(!f||f.purpose!=='class-photo'||!canReadFile(db,null,f)||!f.mime.startsWith('image/'))throw new HttpError(404,'图片不存在');
+    return sendPreview(reply,f,await previewContent(db,f));
+  });
 }
 export async function createExport(db:Store,user:User,filename:string,buffer:Buffer,mime:string,scope:{kind:string,id?:string}):Promise<{fileId:string}>{
   const s=neededStorage(db);if(scope.kind==='finance'?!financeRead(user):!isManager(user))throw new HttpError(403,'无权导出');const id=uid(),key=`classroom/exports/${uid()}${extname(filename)}`;await s.put(key,buffer,mime);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,filename,buffer.length,mime,key,'export',scope.id??null,user.id,'ready',JSON.stringify(scope),now(),new Date(Date.now()+86400000).toISOString());return{fileId:id};

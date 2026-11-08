@@ -31,6 +31,23 @@ export class Store {
       CREATE INDEX IF NOT EXISTS files_entity ON files(entity_id,purpose);
       INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
     `);
+    this.transaction(() => {
+      if (this.get('SELECT version FROM migrations WHERE version=2')) return;
+      // Retain legacy dates for identification, but new templates are selected explicitly.
+      this.sqlite.exec(`
+        CREATE TABLE timetable_templates_v2(id TEXT PRIMARY KEY,effective_date TEXT UNIQUE,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
+        INSERT INTO timetable_templates_v2 SELECT * FROM timetable_templates;
+        DROP TABLE timetable_templates;
+        ALTER TABLE timetable_templates_v2 RENAME TO timetable_templates;
+        CREATE TABLE timetable_exceptions_v2(id TEXT PRIMARY KEY,date TEXT NOT NULL,course_id TEXT NOT NULL,action TEXT NOT NULL,course TEXT,created_at TEXT NOT NULL,template_id TEXT REFERENCES timetable_templates(id),UNIQUE(template_id,date,course_id));
+        INSERT INTO timetable_exceptions_v2
+          SELECT e.*, (SELECT t.id FROM timetable_templates t WHERE t.effective_date<=e.date ORDER BY t.effective_date DESC LIMIT 1)
+          FROM timetable_exceptions e;
+        DROP TABLE timetable_exceptions;
+        ALTER TABLE timetable_exceptions_v2 RENAME TO timetable_exceptions;
+        INSERT INTO migrations VALUES(2,datetime('now'));
+      `);
+    });
   }
   get<T = any>(sql: string, ...params: any[]): T | undefined { return this.sqlite.prepare(sql).get(...params) as T | undefined; }
   all<T = any>(sql: string, ...params: any[]): T[] { return this.sqlite.prepare(sql).all(...params) as T[]; }

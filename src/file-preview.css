@@ -1,0 +1,51 @@
+.file-preview-content {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f5f7;
+}
+
+img.file-preview-content {
+  max-height: 65vh;
+  object-fit: contain;
+}
+
+.file-download-hint {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pdf-preview-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pdf-preview-controls span {
+  font-size: .85rem;
+  text-align: center;
+}
+
+.pdf-preview-scroll {
+  max-height: 65vh;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  background: #f3f5f7;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pdf-preview-page {
+  width: 100%;
+  min-height: 100px;
+}
+
+.pdf-preview-page canvas {
+  display: block;
+  max-width: 100%;
+  margin: auto;
+}

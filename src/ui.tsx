@@ -1,7 +1,10 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { AlertCircle, Download, Eye, File, Inbox, LoaderCircle, Paperclip, Upload, X } from 'lucide-react'
 import { api, errorMessage, useQuery } from './api'
+import { createFilePreview, isPreviewableMime } from './file-preview'
+import { PdfPreview } from './pdf-preview'
 import type { AttachmentPurpose, FileInfo } from './types'
+import './file-preview.css'
 
 export function PageTitle({label, title, detail, actions}: {label: string; title: string; detail: string; actions?: ReactNode}) {
   return <header className="page-title"><div><p className="eyebrow">{label}</p><h1>{title}</h1><p>{detail}</p></div>{actions && <div className="actions">{actions}</div>}</header>
@@ -34,8 +37,8 @@ export function Modal({title, close, children, wide}: {title: string; close: () 
   useEffect(() => {
     ref.current?.showModal()
   }, [])
-  return <dialog ref={ref} className={wide ? 'dialog wide-dialog' : 'dialog'} aria-labelledby={heading} onCancel={event => {event.preventDefault(); close()}}>
-    <header className="dialog-heading"><h2 id={heading}>{title}</h2><button className="btn quiet icon" aria-label="关闭" onClick={close}><X size={20}/></button></header>
+  return <dialog ref={ref} className={wide ? 'dialog wide-dialog' : 'dialog'} aria-labelledby={heading} onCancel={event => {event.preventDefault(); event.stopPropagation(); close()}}>
+    <header className="dialog-heading"><h2 id={heading}>{title}</h2><button type="button" className="btn quiet icon" aria-label="关闭" onClick={close}><X size={20}/></button></header>
     <div className="dialog-body">{children}</div>
   </dialog>
 }
@@ -64,9 +67,8 @@ export function AsyncForm({children, submit, button = '保存', cancel, danger}:
 export const val = (data: FormData, name: string) => String(data.get(name) ?? '').trim()
 export const checked = (data: FormData, name: string) => data.has(name)
 
-export async function openFile(id: string, preview = false) {
-  const {url, previewAvailable} = await api<{url: string; previewAvailable: boolean}>(`/files/${id}/download`, 'POST', {preview})
-  if (preview && !previewAvailable) throw new Error('当前附件无法预览，请使用下载。')
+export async function openFile(id: string) {
+  const {url} = await api<{url: string}>(`/files/${id}/download`, 'POST')
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.target = '_blank'
@@ -74,21 +76,59 @@ export async function openFile(id: string, preview = false) {
   anchor.click()
 }
 
+function FilePreview({id, name, close}: {id: string; name: string; close: () => void}) {
+  const [preview, setPreview] = useState<Awaited<ReturnType<typeof createFilePreview>>>()
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController()
+    let current: Awaited<ReturnType<typeof createFilePreview>> | undefined
+    setPreview(undefined)
+    setError('')
+    createFilePreview(id, controller.signal).then(result => {
+      if (controller.signal.aborted) { result.dispose(); return }
+      current = result
+      setPreview(result)
+    }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) })
+    return () => { controller.abort(); current?.dispose() }
+  }, [id, attempt])
+  async function download() {
+    setDownloading(true)
+    setDownloadError('')
+    try { await openFile(id) } catch (error) { setDownloadError(errorMessage(error)) } finally { setDownloading(false) }
+  }
+  return <Modal title={'预览 · ' + name} close={close} wide>
+    <div className="stack">
+      <Feedback error={error} loading={!preview && !error} retry={() => setAttempt(value => value + 1)}/>
+      {preview && (preview.mime === 'application/pdf'
+        ? <PdfPreview blob={preview.blob} name={name} onError={setError}/>
+        : <img className="file-preview-content" src={preview.url} alt={name} onError={() => setError('图片无法显示，请重试或下载后打开。')}/>)}
+      <Feedback error={downloadError}/>
+      <div className="actions"><button type="button" className="btn" disabled={downloading} onClick={() => void download()}><Download size={16}/>{downloading ? '处理中…' : '下载附件'}</button></div>
+    </div>
+  </Modal>
+}
+
 function FileLink({id, remove}: {id: string; remove?: () => void}) {
   const info = useQuery<FileInfo>('/files/' + id)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
   const name = info.data?.name || (info.error ? '附件' : '正在读取附件…')
-  async function action(preview: boolean) {
+  const canPreview = !!info.data && isPreviewableMime(info.data.mime)
+  async function download() {
     setBusy(true)
     setError('')
-    try { await openFile(id, preview) } catch (error) { setError(errorMessage(error)) } finally { setBusy(false) }
+    try { await openFile(id) } catch (error) { setError(errorMessage(error)) } finally { setBusy(false) }
   }
   return <div><div className="file-row"><File size={17} /><span>{name}</span>
-    {info.data && /^(application\/pdf|image\/)/.test(info.data.mime) && <button className="btn quiet icon" type="button" title="预览" aria-label={`预览 ${name}`} disabled={busy} onClick={() => void action(true)}><Eye size={18} /></button>}
-    <button className="btn quiet icon" type="button" title="下载" aria-label={`下载 ${name}`} disabled={busy} onClick={() => void action(false)}><Download size={18} /></button>
+    {canPreview && <button className="btn quiet icon" type="button" title="预览" aria-label={`预览 ${name}`} disabled={busy} onClick={() => setPreviewing(true)}><Eye size={18} /></button>}
+    {info.data && !canPreview && <small className="file-download-hint">下载后查看</small>}
+    <button className="btn quiet icon" type="button" title="下载" aria-label={`下载 ${name}`} disabled={busy} onClick={() => void download()}><Download size={18} /></button>
     {remove && <button className="btn quiet icon" type="button" title="移除" aria-label={`移除 ${name}`} onClick={remove}><X size={18} /></button>}
-  </div><Feedback error={error}/></div>
+  </div><Feedback error={error}/>{previewing && <FilePreview id={id} name={name} close={() => setPreviewing(false)}/>}</div>
 }
 
 export function FileList({ids}: {ids?: string[]}) {

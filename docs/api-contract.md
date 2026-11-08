@@ -46,10 +46,18 @@ POST base/:id/export-files with optional `{userIds?:string[]}` -> `{fileId}` ZIP
 
 ## Timetable
 
-GET /api/public/timetable?date=YYYY-MM-DD -> `{date,effectiveDate,version,periods:[{id:number,label,start,end}],courses:[{id,name,teacher,room,day:number,startPeriod:number,endPeriod:number,color,notes}],exceptions:[{id,date,courseId,action:'cancel'|'replace',course?:Course}],config:{semesterStart,semesterEnd,holidays},today:Course[]}`. day=1..7. Public fields safe, guests see same renderable schedule.
-PUT /api/timetable {effectiveDate,periods,courses,version} manager -> result same shape.
-POST /api/timetable/exceptions {date,courseId,action,course?} manager -> exception.
-DELETE /api/timetable/exceptions/:id manager -> {ok:true}.
+GET /api/public/timetable?date=YYYY-MM-DD -> `Timetable {date,effectiveDate,templateId:null|string,templateName,selectionVersion,version,periods:[{id:number,label,start,end}],courses:[{id,name,teacher,room,day:number,startPeriod:number,endPeriod:number,color,notes}],exceptions:[{id,date,courseId,action:'cancel'|'replace',course?:Course}],config:{semesterStart,semesterEnd,holidays},today:Course[]}`. day=1..7. All dates use the single active weekly template, with date-specific exceptions and semester/holiday filtering. Guests see the same safe schedule. effectiveDate is legacy metadata, not a future activation rule.
+
+Template = `{id,name,effectiveDate:null|string,version,periods,courses}`. All management routes require admin or committee.
+GET /api/timetable/templates -> `{templates:Template[],activeTemplateId:null|string,selectionVersion}`; drafts are not public.
+PUT /api/timetable `{templateId:null|string,name,periods,courses,version,selectionVersion}` -> Timetable; updates the current template immediately, or creates the first active template when templateId is null.
+POST /api/timetable/templates `{name,periods,courses,selectionVersion}` -> Template; saves an inactive draft without switching.
+PUT /api/timetable/templates/:id `{name,periods,courses,version,selectionVersion}` -> Template; updates the named template in place.
+POST /api/timetable/templates/:id/apply `{version,selectionVersion}` -> Timetable; explicitly switches the single active template.
+POST /api/timetable/exceptions `{date,courseId,action,course?,templateId,version,selectionVersion}` -> exception.
+DELETE /api/timetable/exceptions/:id with JSON body `{templateId,version,selectionVersion}` -> `{ok:true}`.
+
+Writes check template content and active-selection versions in a transaction; stale writes return 409. Exceptions belong to their template, survive switches, and advance its version when changed. Weekly edits and applies validate all affected exceptions, including dates hidden by semester/holidays. Migration preserves legacy templates and associates each legacy exception with its formerly effective template. The first selection is initialized from the server's Shanghai date once; later dates never auto-switch it.
 
 ## Resources and class
 
@@ -79,6 +87,9 @@ File {id,name,size,mime,status:'pending'|'ready',purpose,entityId,ownerId,create
 POST /api/files/upload {name,size,mime,purpose:'task-attachment'|'submission'|'resource'|'receipt'|'avatar'|'class-photo',entityId?} -> {fileId,url,headers}. Draft new-resource files may use no entityId, manager-only; staged submission needs existing task ID. No COS -> 503 explicit.
 POST /api/files/:id/confirm -> File; link only after verified successful upload, module mutation must validate binding ACL and change state (shared `validateAttachments(db,user,ids,purpose,entityId)` and `bindAttachments(db,ids,entityId)` exports).
 GET /api/files/:id -> safe File metadata, authorized.
-POST /api/files/:id/download {preview?:boolean} -> {url,previewAvailable:boolean}; authorized. Public class photos can use GET /api/public/photo/:id -> redirect.
-`StorageAdapter` methods `configured:boolean`, `uploadUrl(key,mime,size):Promise<{url,headers}>`, `head(key):Promise<{size,mime}>`, `readHead(key):Promise<Buffer>`, `downloadUrl(key,filename,preview?):Promise<string>`, `put(key,buffer,mime):Promise<void>`, `remove(key):Promise<void>`.
+POST /api/files/:id/download {preview?:boolean} -> {url,previewAvailable:boolean}; authorized. Downloads use short-lived COS links. For supported preview requests, url is the authenticated same-origin `/api/files/:id/preview` endpoint and previewAvailable is true without COS_PREVIEW_DOMAIN. Unsupported formats return a download link with previewAvailable false.
+GET /api/files/:id/preview -> verified PDF/PNG/JPEG/WebP bytes; rechecks session, current file lifecycle and object-level visibility. Reads private COS, checks size (maximum 20 MiB), filename/type and signature; returns no-store, nosniff, attachment disposition and sandbox CSP. Frontend fetches bytes with session cookies and displays a disposable Blob URL; close aborts pending fetches and revokes the URL. No public permanent preview links.
+PDF content is rendered to a bounded canvas by a dynamically imported PDF.js engine, with local worker/font/CMap/decoder assets and previous/next controls. Images use Blob URLs. Closing a preview cancels rendering/destroys its worker; Escape stops at the top dialog, preserving unsaved editor data underneath.
+GET /api/public/photo/:id -> image bytes only for the currently configured public class photo; other files remain protected.
+`StorageAdapter` methods `configured:boolean`, `uploadUrl(key,mime,size):Promise<{url,headers}>`, `head(key):Promise<{size,mime}>`, `readHead(key):Promise<Buffer>`, `read(key):Promise<Buffer>`, `downloadUrl(key,filename,preview?):Promise<string>`, `put(key,buffer,mime):Promise<void>`, `remove(key):Promise<void>`.
 `createExport(db,user,filename,buffer,mime,scope):Promise<{fileId}>` uses app-registered storage via Store or passed configuration; root will provide implementation. scope {kind:'task'|'finance',id?:string}. GET /api/status returns config only, no secrets.

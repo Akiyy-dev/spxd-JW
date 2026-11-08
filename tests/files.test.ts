@@ -31,7 +31,7 @@ async function setup(user: User | null, configured = false, overrides: Partial<S
   registerFiles(app, db, storage);
   registerFinance(app, db);
   await app.ready();
-  return { app, db, storage, setUser: (next: User) => { user = next; } };
+  return { app, db, storage, setUser: (next: User | null) => { user = next; } };
 }
 test('guest cannot request upload and configured status hides secrets',async()=>{const{app,db}=await setup(null);assert.equal((await app.inject({method:'POST',url:'/api/files/upload',payload:{}})).statusCode,401);await app.close();db.close()});
 test('missing COS rejects actual uploads and students cannot upload resources',async()=>{let s=await setup(manager);assert.equal((await s.app.inject({method:'POST',url:'/api/files/upload',payload:{name:'note.pdf',size:20,mime:'application/pdf',purpose:'resource'}})).statusCode,503);await s.app.close();s.db.close();s=await setup(student,true);assert.equal((await s.app.inject({method:'POST',url:'/api/files/upload',payload:{name:'note.pdf',size:20,mime:'application/pdf',purpose:'resource'}})).statusCode,403);await s.app.close();s.db.close()});
@@ -232,4 +232,148 @@ test('submission bundles sanitize dot-only and control-character folder names', 
     assert.equal(extra, undefined);
     assert.deepEqual(await entry.async('nodebuffer'), content);
   }
+});
+
+function seedPreviewFile(db: ReturnType<typeof createStore>, options: {
+  id?: string; name?: string; mime?: string; size?: number; purpose?: string; entityId?: string;
+} = {}) {
+  const { id = 'preview', name = '讲义.pdf', mime = 'application/pdf', size = 8,
+    purpose = 'resource', entityId = null } = options;
+  db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+    id, name, size, mime, 'private/' + id, purpose, entityId, manager.id, 'ready', date);
+  return '/api/files/' + id;
+}
+
+test('PDF preview uses authenticated application content without a COS preview domain', async t => {
+  const previousDomain = process.env.COS_PREVIEW_DOMAIN;
+  delete process.env.COS_PREVIEW_DOMAIN;
+  t.after(() => {
+    if (previousDomain === undefined) delete process.env.COS_PREVIEW_DOMAIN;
+    else process.env.COS_PREVIEW_DOMAIN = previousDomain;
+  });
+  const bytes = Buffer.from('%PDF-1.7');
+  const { app, db } = await setup(manager, true, { read: async () => bytes });
+  t.after(async () => { await app.close(); db.close(); });
+  const fileUrl = seedPreviewFile(db);
+  const preview = await app.inject({ method: 'POST', url: fileUrl + '/download', payload: { preview: true } });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.deepEqual(preview.json(), { url: fileUrl + '/preview', previewAvailable: true });
+  const content = await app.inject({ method: 'GET', url: preview.json().url });
+  assert.equal(content.statusCode, 200, content.body);
+  assert.deepEqual(content.rawPayload, bytes);
+  assert.equal(content.headers['content-type'], 'application/pdf');
+  assert.equal(content.headers['cache-control'], 'private, no-store');
+  assert.equal(content.headers['x-content-type-options'], 'nosniff');
+  assert.match(String(content.headers['content-disposition']), /^attachment;/);
+  assert.match(String(content.headers['content-security-policy']), /sandbox/);
+  const download = await app.inject({ method: 'POST', url: fileUrl + '/download' });
+  assert.equal(download.json().url, 'https://download.example');
+});
+
+test('preview content rechecks authorization, current visibility, and file lifecycle', async t => {
+  let reads = 0;
+  const { app, db, setUser } = await setup(manager, true, {
+    read: async () => { reads++; return Buffer.from('%PDF-1.7'); },
+  });
+  t.after(async () => { await app.close(); db.close(); });
+  const fileUrl = seedPreviewFile(db);
+  assert.equal((await app.inject({ method: 'POST', url: fileUrl + '/download', payload: { preview: true } })).statusCode, 200);
+  for (const [user, status] of [[null, 401], [student, 403], [{ ...manager, mustChangePassword: true }, 403]] as const) {
+    setUser(user);
+    assert.equal((await app.inject(fileUrl + '/preview')).statusCode, status);
+  }
+  setUser(manager);
+  for (const status of ['pending', 'cleaning']) {
+    db.run('UPDATE files SET status=? WHERE id=?', status, 'preview');
+    assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 403);
+  }
+  db.run("UPDATE files SET status='ready',expires_at='2000-01-01' WHERE id='preview'");
+  assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 403);
+  assert.equal((await app.inject('/api/files/missing/preview')).statusCode, 404);
+  assert.equal(reads, 0);
+});
+
+test('private and replaced receipt previews retain finance-only access', async t => {
+  const { app, db, setUser } = await setup(financeManager, true, { read: async () => Buffer.from('%PDF-1.7') });
+  t.after(async () => { await app.close(); db.close(); });
+  const { paymentId, fileId } = seedPaymentReceipt(db);
+  db.run('UPDATE files SET size=8 WHERE id=?', fileId);
+  const contentUrl = '/api/files/' + fileId + '/preview';
+  setUser(student);
+  assert.equal((await app.inject(contentUrl)).statusCode, 200);
+  setUser(financeManager);
+  assert.equal((await app.inject({ method: 'PUT', url: '/api/finance/payments/' + paymentId,
+    payload: { receiptIds: [], publicReceipt: false, version: 1, reason: '更换凭证' } })).statusCode, 200);
+  for (const member of [student, manager]) {
+    setUser(member);
+    assert.equal((await app.inject(contentUrl)).statusCode, 403);
+  }
+  for (const member of [financeManager, administrator]) {
+    setUser(member);
+    assert.equal((await app.inject(contentUrl)).statusCode, 200);
+  }
+});
+
+test('Office, archives and active content are download-only even with a preview domain', async t => {
+  const previousDomain = process.env.COS_PREVIEW_DOMAIN;
+  process.env.COS_PREVIEW_DOMAIN = 'preview.example';
+  t.after(() => {
+    if (previousDomain === undefined) delete process.env.COS_PREVIEW_DOMAIN;
+    else process.env.COS_PREVIEW_DOMAIN = previousDomain;
+  });
+  let reads = 0;
+  const { app, db } = await setup(manager, true, { read: async () => { reads++; return Buffer.from('<script>'); } });
+  t.after(async () => { await app.close(); db.close(); });
+  for (const [name, mime] of [
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['data.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['slides.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ['files.zip', 'application/zip'], ['note.txt', 'text/plain'], ['image.svg', 'image/svg+xml'],
+    ['page.html', 'text/html'],
+  ]) {
+    const fileUrl = seedPreviewFile(db, { id: name, name, mime });
+    const result = await app.inject({ method: 'POST', url: fileUrl + '/download', payload: { preview: true } });
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.json(), { url: 'https://download.example', previewAvailable: false });
+    assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 415);
+  }
+  assert.equal(reads, 0);
+});
+
+test('preview rejects oversized, mismatched and unavailable stored content', async t => {
+  let content = Buffer.from('%PDF-1.7');
+  let readError = false;
+  let reads = 0;
+  const { app, db } = await setup(manager, true, { read: async () => {
+    reads++;
+    if (readError) throw new Error('COS unavailable');
+    return content;
+  } });
+  t.after(async () => { await app.close(); db.close(); });
+  const fileUrl = seedPreviewFile(db, { size: 21 * 1024 * 1024 });
+  assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 413);
+  assert.equal(reads, 0);
+  db.run("UPDATE files SET size=8 WHERE id='preview'");
+  content = Buffer.from('%PDF-1.7 changed');
+  assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 502);
+  content = Buffer.from('<script>');
+  assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 502);
+  readError = true;
+  assert.equal((await app.inject(fileUrl + '/preview')).statusCode, 502);
+});
+
+test('current public class photo is served as image bytes without exposing other photos', async t => {
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXuoAAAAASUVORK5CYII=', 'base64');
+  const { app, db } = await setup(null, true, { read: async () => bytes });
+  t.after(async () => { await app.close(); db.close(); });
+  seedPreviewFile(db, { id: 'photo', name: '合影.png', mime: 'image/png', size: bytes.length, purpose: 'class-photo' });
+  seedPreviewFile(db, { id: 'old-photo', name: '旧合影.png', mime: 'image/png', size: bytes.length, purpose: 'class-photo' });
+  db.setSetting('class', { photoFileId: 'photo' });
+  const photo = await app.inject('/api/public/photo/photo');
+  assert.equal(photo.statusCode, 200, photo.body);
+  assert.equal(photo.headers['content-type'], 'image/png');
+  assert.deepEqual(photo.rawPayload, bytes);
+  assert.equal(photo.headers.location, undefined);
+  assert.equal((await app.inject('/api/public/photo/old-photo')).statusCode, 404);
+  assert.equal((await app.inject('/api/files/photo/preview')).statusCode, 401);
 });

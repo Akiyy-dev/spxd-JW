@@ -3,7 +3,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, Clock3, MapPin, Pencil, Plus, 
 import { api, dateCN, dateLabel, errorMessage, useQuery } from './api'
 import { createId } from './id'
 import { AsyncForm, Badge, Empty, Feedback, Field, Modal, PageTitle, Panel, val } from './ui'
-import type { Course, Period, Timetable } from './types'
+import type { Course, Period, Timetable, TimetableTemplate, TimetableTemplates } from './types'
 
 const weekdays = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
 const colors = [
@@ -47,9 +47,12 @@ export function DailyCourses({courses, periods}: {courses: Course[]; periods: Pe
 export function TimetablePage({manager}: {manager: boolean}) {
   const [date, setDate] = useState(dateCN)
   const [view, setView] = useState<'day' | 'week'>(() => matchMedia('(max-width: 760px)').matches ? 'day' : 'week')
-  const [editing, setEditing] = useState<'template' | 'exception' | null>(null)
+  const [editing, setEditing] = useState<'templates' | 'exception' | null>(null)
+  const [templateEditor, setTemplateEditor] = useState<{mode: 'current' | 'saved' | 'new'; template?: TimetableTemplate; selectionVersion: number}>()
+  const [notice, setNotice] = useState('')
   const [version, setVersion] = useState(0)
   const day = useQuery<Timetable>('/public/timetable?date=' + date)
+  const templates = useQuery<TimetableTemplates>(manager && editing === 'templates' ? '/timetable/templates' : null)
   const monday = shiftDate(date, 1 - dayOfWeek(date))
   const weekDates = weekdays.map((_, index) => shiftDate(monday, index))
   const [week, setWeek] = useState<{monday: string; version: number; days?: Timetable[]; error?: string}>()
@@ -65,10 +68,12 @@ export function TimetablePage({manager}: {manager: boolean}) {
   function reload() {
     setVersion(previous => previous + 1)
     day.reload()
+    templates.reload()
   }
   const move = (direction: number) => setDate(shiftDate(date, direction * (view === 'day' ? 1 : 7)))
   return <div className="stack">
-    <PageTitle label="学习安排" title="课程表" detail="按节次查看课程、教室与临时调课。" actions={manager && day.data && <><button className="btn" onClick={() => setEditing('exception')}><CalendarDays size={17}/>临时调整</button><button className="btn primary" onClick={() => setEditing('template')}><Pencil size={16}/>编辑周课表</button></>}/>
+    <PageTitle label="学习安排" title="课程表" detail="按节次查看当前已应用的周课表与临时调课。" actions={manager && day.data && <><button className="btn" onClick={() => setEditing('exception')}><CalendarDays size={17}/>临时调整</button><button className="btn" onClick={() => setEditing('templates')}>课表模板</button><button className="btn primary" onClick={() => setTemplateEditor({mode: 'current', selectionVersion: day.data!.selectionVersion})}><Pencil size={16}/>编辑当前课表</button></>}/>
+    {notice && <p className="feedback" role="status">{notice}</p>}
     <section className="panel timetable-panel">
       <div className="toolbar timetable-toolbar">
         <div className="actions">
@@ -86,12 +91,31 @@ export function TimetablePage({manager}: {manager: boolean}) {
         <Feedback loading={!currentWeek} error={currentWeek?.error} retry={reload} />
         {currentWeek?.days && <WeekGrid days={currentWeek.days} selected={date} selectDay={value => {setDate(value); setView('day')}} />}
       </>}
-      {day.data?.effectiveDate && <p className="muted schedule-foot">当前选择日期使用的模板生效于 {day.data.effectiveDate}。</p>}
+      {day.data?.templateId && <p className="muted schedule-foot">当前课表：{day.data.templateName}，每周固定重复。</p>}
     </section>
     {manager && day.data && day.data.exceptions.length > 0 && <Panel title="临时调整记录" detail={dateLabel(date)}>
-      <div className="rows">{day.data.exceptions.filter(item => item.date === date).map(item => <ExceptionRow key={item.id} item={item} courses={day.data!.courses} reload={reload} />)}</div>
+      <div className="rows">{day.data.exceptions.filter(item => item.date === date).map(item => <ExceptionRow key={item.id} item={item} timetable={day.data!} reload={reload} />)}</div>
     </Panel>}
-    {editing === 'template' && day.data && <TemplateEditor timetable={day.data} close={() => setEditing(null)} saved={effective => {setDate(effective); setEditing(null); reload()}} />}
+    {manager && editing === 'templates' && !templateEditor && <Modal title="课表模板" close={() => setEditing(null)} wide>
+      <p className="muted">保存模板不会自动切换课表。管理员或班委点击“应用此模板”后，全班查看同一份周课表；临时调课随所属模板保留。</p>
+      <Feedback {...templates} retry={templates.reload}/>
+      {templates.data && <div className="stack">
+        <button className="btn" onClick={() => setTemplateEditor({mode: 'new', selectionVersion: templates.data!.selectionVersion})}><Plus size={17}/>从当前课表新建模板</button>
+        {templates.data.templates.map(template => <article className="nested-panel" key={template.id}>
+          <div className="split"><div><h3>{template.name}</h3><p className="muted">{template.courses.length} 门课程 · {template.periods.length} 个节次</p></div>{template.id === templates.data!.activeTemplateId && <Badge tone="good">正在使用</Badge>}</div>
+          <div className="actions"><button className="btn" onClick={() => setTemplateEditor({mode: 'saved', template, selectionVersion: templates.data!.selectionVersion})}>编辑模板</button>
+            {template.id !== templates.data!.activeTemplateId && <AsyncForm button="应用此模板" submit={async () => {
+              await api(`/timetable/templates/${template.id}/apply`, 'POST', {version: template.version, selectionVersion: templates.data!.selectionVersion})
+              setEditing(null); setNotice(`已应用“${template.name}”，课表已更新。`); reload()
+            }}>{null}</AsyncForm>}</div>
+        </article>)}
+        {!templates.data.templates.length && <Empty>暂无保存的模板，可先编辑当前课表。</Empty>}
+      </div>}
+    </Modal>}
+    {manager && templateEditor && day.data && <TemplateEditor timetable={day.data} {...templateEditor} close={() => setTemplateEditor(undefined)} saved={() => {
+      setNotice(templateEditor.mode === 'current' || templateEditor.template?.id === day.data!.templateId ? '当前课表已保存并立即生效。' : '模板已保存，可在课表模板中选择应用。')
+      setTemplateEditor(undefined); reload()
+    }} />}
     {editing === 'exception' && day.data && <ExceptionEditor timetable={day.data} close={() => setEditing(null)} saved={() => {setEditing(null); reload()}} />}
   </div>
 }
@@ -131,21 +155,20 @@ function CourseFields({course, periods, change, showDay = true}: {course: Course
   </div>
 }
 
-function TemplateEditor({timetable, close, saved}: {timetable: Timetable; close: () => void; saved: (date: string) => void}) {
-  const [periods, setPeriods] = useState(timetable.periods)
-  const [courses, setCourses] = useState(timetable.courses)
-  return <Modal title="编辑固定周课表" close={close} wide>
-    <AsyncForm cancel={close} submit={async data => {
-      const effectiveDate = val(data, 'effectiveDate')
-      const target = await api<Timetable>('/public/timetable?date=' + effectiveDate)
-      const replacing = target.version > 0 && target.effectiveDate === effectiveDate
-      if (replacing && effectiveDate !== timetable.effectiveDate) throw new Error('这一天已有生效模板。请先切换到该日期再编辑。')
-      const version = replacing ? timetable.version : 0
-      await api('/timetable', 'PUT', {effectiveDate, periods, courses, version})
-      saved(effectiveDate)
+function TemplateEditor({timetable, template, mode, selectionVersion, close, saved}: {timetable: Timetable; template?: TimetableTemplate; mode: 'current' | 'saved' | 'new'; selectionVersion: number; close: () => void; saved: () => void}) {
+  const [periods, setPeriods] = useState(template?.periods ?? timetable.periods)
+  const [courses, setCourses] = useState(template?.courses ?? timetable.courses)
+  const active = mode === 'current' || template?.id === timetable.templateId
+  return <Modal title={mode === 'new' ? '新建备用模板' : active ? '编辑当前课表' : '编辑备用模板'} close={close} wide>
+    <AsyncForm cancel={close} button={active ? '保存并生效' : '保存模板'} submit={async data => {
+      const body = {name: val(data, 'name'), periods, courses, selectionVersion}
+      if (mode === 'new') await api('/timetable/templates', 'POST', body)
+      else if (template) await api('/timetable/templates/' + template.id, 'PUT', {...body, version: template.version})
+      else await api('/timetable', 'PUT', {...body, templateId: timetable.templateId, version: timetable.version})
+      saved()
     }}>
       <div className="stack fields">
-        <Field label="模板生效日期" hint="从该日期起按新模板循环，日期例外单独设置。"><input type="date" name="effectiveDate" required min={dateCN()} defaultValue={timetable.date >= dateCN() ? timetable.date : dateCN()}/></Field>
+        <Field label="课表名称" hint={active ? '保存后立即更新当前周课表。' : '仅保存为备用模板，需在模板列表点击应用后生效。'}><input name="name" required maxLength={100} defaultValue={template?.name ?? (mode === 'new' ? '新周课表' : timetable.templateName || '班级周课表')}/></Field>
         <div className="editor-section"><h3>节次时间</h3>
           {periods.map(period => <div className="period-fields" key={period.id}>
             <Field label="名称"><input value={period.label} required onChange={event => setPeriods(periods.map(item => item.id === period.id ? {...item, label: event.target.value} : item))}/></Field>
@@ -173,7 +196,7 @@ function ExceptionEditor({timetable, close, saved}: {timetable: Timetable; close
   const [course, setCourse] = useState<Course | undefined>(selectable[0])
   return <Modal title="新增临时调课" close={close}>
     {course ? <AsyncForm cancel={close} submit={async () => {
-      await api('/timetable/exceptions', 'POST', {date: timetable.date, courseId: course.id, action, ...(action === 'replace' ? {course} : {})})
+      await api('/timetable/exceptions', 'POST', {templateId: timetable.templateId, version: timetable.version, selectionVersion: timetable.selectionVersion, date: timetable.date, courseId: course.id, action, ...(action === 'replace' ? {course} : {})})
       saved()
     }}><div className="stack fields">
       <p className="muted">调整日期 {dateLabel(timetable.date)}。可先在课表上选择其他日期。</p>
@@ -184,11 +207,11 @@ function ExceptionEditor({timetable, close, saved}: {timetable: Timetable; close
   </Modal>
 }
 
-function ExceptionRow({item, courses, reload}: {item: Timetable['exceptions'][number]; courses: Course[]; reload: () => void}) {
+function ExceptionRow({item, timetable, reload}: {item: Timetable['exceptions'][number]; timetable: Timetable; reload: () => void}) {
   const [removing, setRemoving] = useState(false)
-  return <div className="list-row"><span><strong>{courses.find(course => course.id === item.courseId)?.name || item.course?.name || '课程'}</strong><small>{item.course?.notes}</small></span><Badge>{item.action === 'cancel' ? '停课' : '临时调课'}</Badge><button className="btn quiet" onClick={() => setRemoving(true)}>移除调整</button>
+  return <div className="list-row"><span><strong>{timetable.courses.find(course => course.id === item.courseId)?.name || item.course?.name || '课程'}</strong><small>{item.course?.notes}</small></span><Badge>{item.action === 'cancel' ? '停课' : '临时调课'}</Badge><button className="btn quiet" onClick={() => setRemoving(true)}>移除调整</button>
     {removing && <Modal title="移除临时调整" close={() => setRemoving(false)}><AsyncForm button="移除调整" danger cancel={() => setRemoving(false)} submit={async () => {
-      await api('/timetable/exceptions/' + item.id, 'DELETE')
+      await api('/timetable/exceptions/' + item.id, 'DELETE', {templateId: timetable.templateId, version: timetable.version, selectionVersion: timetable.selectionVersion})
       setRemoving(false)
       reload()
     }}><p>移除此记录后，所选日期将恢复该课程的固定安排。</p></AsyncForm></Modal>}
