@@ -136,6 +136,7 @@ export function FileList({ids}: {ids?: string[]}) {
 }
 
 export function UploadFiles({ids, setIds, purpose, entityId, label = '附件', max = 5, required = false}: {ids: string[]; setIds: (ids: string[]) => void; purpose: AttachmentPurpose; entityId?: string; label?: string; max?: number; required?: boolean}) {
+  const maxMiB = purpose === 'avatar' ? 5 : 20
   const status = useQuery<{cosConfigured: boolean}>('/status')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -147,7 +148,7 @@ export function UploadFiles({ids, setIds, purpose, entityId, label = '附件', m
     try {
       if (files.length > max - ids.length) throw new Error(`还可上传 ${max - ids.length} 个文件。`)
       for (const file of Array.from(files)) {
-        if (file.size === 0 || file.size > 20 * 1024 * 1024) throw new Error('请选择非空且不超过 20 MB 的文件。')
+        if (file.size === 0 || file.size > maxMiB * 1024 * 1024) throw new Error(`请选择非空且不超过 ${maxMiB} MiB 的文件。`)
         const {fileId, url, headers} = await api<{fileId: string; url: string; headers: Record<string, string>}>('/files/upload', 'POST', {name: file.name, size: file.size, mime: file.type || 'application/octet-stream', purpose, entityId})
         const put = await fetch(url, {method: 'PUT', headers, body: file})
         if (!put.ok) throw new Error('附件上传失败，请重试。')
@@ -159,10 +160,11 @@ export function UploadFiles({ids, setIds, purpose, entityId, label = '附件', m
   }
   return <div className="upload wide" data-uploading={busy}>
     <p className="field-label"><Paperclip size={16}/>{label}{required && '（必填）'}</p>
+    {purpose === 'avatar' && <p className="muted">支持 JPG、PNG、WebP、GIF，每张不超过 5 MiB。GIF 保留动画，建议使用 1024×1024 的图片。</p>}
     {ids.map(id => <FileLink key={id} id={id} remove={busy ? undefined : () => setIds(ids.filter(value => value !== id))}/>)}
     {ids.length < max && <label className={'upload-zone' + (!status.data?.cosConfigured ? ' disabled' : '')}>
       <Upload size={18}/>{busy ? '上传并校验中…' : status.loading ? '正在检查附件服务…' : status.data?.cosConfigured ? '选择文件上传' : 'COS 附件服务尚未配置'}
-      <input type="file" multiple={max > 1} disabled={busy || !status.data?.cosConfigured} accept={purpose === 'avatar' || purpose === 'class-photo' ? '.jpg,.jpeg,.png,.webp' : '.pdf,.jpg,.jpeg,.png,.webp,.gif,.txt,.csv,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx'} onChange={event => {void upload(event.target.files); event.currentTarget.value = ''}} />
+      <input type="file" multiple={max > 1} disabled={busy || !status.data?.cosConfigured} accept={purpose === 'avatar' ? '.jpg,.jpeg,.png,.webp,.gif' : purpose === 'class-photo' ? '.jpg,.jpeg,.png,.webp' : '.pdf,.jpg,.jpeg,.png,.webp,.gif,.txt,.csv,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx'} onChange={event => {void upload(event.target.files); event.currentTarget.value = ''}} />
     </label>}
     <Feedback error={error || status.error} />
   </div>

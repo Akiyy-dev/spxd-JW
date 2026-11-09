@@ -2,8 +2,9 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { defaultConfig } from './catalog.ts';
-import { conflict, HttpError, now, parse, requireAdmin, uid, versionSchema, type User } from './common.ts';
+import { conflict, HttpError, json, now, parse, requireAdmin, requireUser, uid, versionSchema, type User } from './common.ts';
 import type { Store } from './db.ts';
+import {replaceAvatar} from './files.ts';
 
 const sessionCookie = 'class_session';
 const sessionSeconds = 7 * 24 * 60 * 60;
@@ -26,6 +27,7 @@ interface UserRow {
   must_change_password: number;
   active: number;
   version: number;
+  profile: string;
 }
 
 export function hashPassword(value: string): string {
@@ -47,6 +49,7 @@ export function publicUser(row: UserRow): User {
     role: row.role,
     financeManage: row.role === 'committee' && Boolean(row.finance_manage),
     inClass: row.role !== 'admin' || Boolean(row.in_class),
+    avatarFileId: json<{avatarFileId?:string}>(row.profile,{}).avatarFileId || null,
     mustChangePassword: Boolean(row.must_change_password),
     active: Boolean(row.active),
     version: row.version,
@@ -175,6 +178,22 @@ export function registerAuth(app: FastifyInstance, db: Store) {
     });
     setSession(reply, token);
     return {user: publicUser(db.get<UserRow>('SELECT * FROM users WHERE id=?', row.id)!)};
+  });
+  app.put('/api/auth/avatar', async request => {
+    const user=requireUser(request);
+    const input=parse(z.object({avatarFileId:z.string().min(1).nullable(),version:versionSchema}),request.body);
+    return db.transaction(()=>{
+      const row=db.get<UserRow>('SELECT * FROM users WHERE id=?',user.id)!;
+      conflict(row.version,input.version);
+      const profile=json<Record<string,unknown>>(row.profile,{});
+      const previousId=typeof profile.avatarFileId==='string'&&profile.avatarFileId?profile.avatarFileId:null;
+      replaceAvatar(db,user,user.id,previousId,input.avatarFileId);
+      db.run('UPDATE users SET profile=?,version=version+1 WHERE id=?',JSON.stringify({...profile,avatarFileId:input.avatarFileId}),user.id);
+      const config=db.setting('class',defaultConfig);
+      db.setSetting('class',{...config,version:config.version+1});
+      db.audit(user.id,'user.avatar',user.id,{before:previousId,after:input.avatarFileId});
+      return {user:publicUser(db.get<UserRow>('SELECT * FROM users WHERE id=?',user.id)!)};
+    });
   });
   app.get('/api/users', async request => {
     requireAdmin(request);

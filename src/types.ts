@@ -1,5 +1,5 @@
 export type Role = 'admin' | 'committee' | 'student'
-export type User = {id: string; username: string; name: string; role: Role; inClass: boolean; financeManage: boolean; mustChangePassword: boolean; active: boolean; version: number}
+export type User = {id: string; username: string; name: string; role: Role; inClass: boolean; avatarFileId?: string | null; financeManage: boolean; mustChangePassword: boolean; active: boolean; version: number}
 export const roleNames: Record<Role, string> = {admin: '管理员', committee: '班委', student: '学生'}
 
 export type Config = {name: string; subtitle: string; introduction: string; academicYear: string; semesterStart: string; semesterEnd: string; holidays: string[]; demo: boolean; photoFileId?: string}

@@ -5,6 +5,7 @@ import { api, dateCN, dateLabel, errorMessage, timestamp, useQuery } from './api
 import { AsyncForm, Badge, Empty, Feedback, Field, PageTitle, Panel, val } from './ui'
 import { roleNames, type Config, type Task, type Timetable, type User } from './types'
 import { TimetablePage, DailyCourses } from './timetable'
+import { Avatar, PersonalAvatar } from './avatar'
 const Tasks = lazy(() => import('./tasks').then(module => ({default: module.Tasks})))
 const Resources = lazy(() => import('./catalog').then(module => ({default: module.Resources})))
 const ClassPage = lazy(() => import('./catalog').then(module => ({default: module.ClassPage})))
@@ -133,7 +134,7 @@ export function App() {
         <div className="topbar-actions">
           {config.data?.demo && <Badge tone="warn">演示数据</Badge>}
           <RepositoryLink placement="topbar" />
-          {user ? <><Link to="/account" className="user-chip"><span className="avatar">{user.name.slice(0, 1)}</span><span className="chip-name">{user.name}<small>{roleNames[user.role]}</small></span></Link><button className="btn quiet icon" title="退出登录" aria-label="退出登录" disabled={signingOut} onClick={() => void logout()}><LogOut size={18}/></button></> : <Link to="/login" className="btn"><LogIn size={17}/>登录</Link>}
+          {user ? <><Link to="/account" className="user-chip"><Avatar id={user.mustChangePassword ? null : user.avatarFileId} name={user.name}/><span className="chip-name">{user.name}<small>{roleNames[user.role]}</small></span></Link><button className="btn quiet icon" title="退出登录" aria-label="退出登录" disabled={signingOut} onClick={() => void logout()}><LogOut size={18}/></button></> : <Link to="/login" className="btn"><LogIn size={17}/>登录</Link>}
         </div>
       </header>
       <main id="main" className="main-content" tabIndex={-1}>
@@ -150,7 +151,7 @@ export function App() {
           <Route path="/affairs/*" element={guard(user && <Tasks key="affairs" user={user} kind="affairs" />)} />
           <Route path="/resources" element={guard(<Resources manager={manager} />)} />
           <Route path="/finance" element={guard(user && <Finance user={user} />)} />
-          <Route path="/class" element={guard(<ClassPage manager={manager} changed={config.reload} />)} />
+          <Route path="/class" element={guard(<ClassPage manager={manager} changed={() => {config.reload(); void refreshIdentity()}} />)} />
           <Route path="/account" element={guard(user && <Account user={user} update={setIdentity} />)} />
           <Route path="/accounts" element={guard(<Accounts changed={() => {void refreshIdentity()}} />, true)} />
           <Route path="*" element={<PageTitle label="404" title="找不到页面" detail="该地址可能已经变更。" actions={<Link className="btn primary" to="/">返回首页</Link>} />} />
@@ -200,6 +201,7 @@ function Account({user, update}: {user: User; update: (user: User) => void}) {
   return <div className="stack">
     <PageTitle label="设置" title="个人账号" detail="查看当前登录身份，管理账号密码。" />
     <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
+    <PersonalAvatar user={user} update={update}/>
     <Panel title="修改密码" detail={user.mustChangePassword ? '首次登录或密码被重置后，请先更新密码。' : '请使用长度至少 8 位的新密码。'}>
       {saved && <p role="status" className="feedback">密码已更新。</p>}
       <AsyncForm button="更新密码" submit={async data => {

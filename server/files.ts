@@ -21,15 +21,22 @@ export class CosStorage implements StorageAdapter {
   async put(key:string,buffer:Buffer,mime:string){await this.call('putObject',{...this.params(key),Body:buffer,ContentType:mime,ContentLength:buffer.length,Headers:{'x-cos-forbid-overwrite':'true'}});}
   async remove(key:string){await this.call('deleteObject',this.params(key));}
 }
-const types:Record<string,string>={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.txt':'text/plain','.csv':'text/csv','.zip':'application/zip','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
-const previewTypes = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp']);
+const types:Record<string,string>={'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.txt':'text/plain','.csv':'text/csv','.zip':'application/zip','.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
+const previewTypes = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const maxPreviewSize = 20 * 1024 * 1024;
+export const maxAvatarSize = 5 * 1024 * 1024;
+const avatarTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 function previewable(f: any) {
   return previewTypes.has(f.mime) && types[extname(f.name).toLowerCase()] === f.mime;
 }
 const isManager=(u:User)=>u.role==='admin'||u.role==='committee';
 const financeRead=canManageFinance;
 function uploadAccess(db:Store,u:User,purpose:string,entityId?:string|null){
+  if(purpose==='avatar'){
+    if(!entityId||!db.get('SELECT id FROM users WHERE id=? AND active=1',entityId))throw new HttpError(400,'头像必须关联启用的账号');
+    if(entityId!==u.id&&!isManager(u))throw new HttpError(403,'只能修改自己的头像');
+    return;
+  }
   if(purpose==='receipt'){if(!canManageFinance(u))throw new HttpError(403,'仅管理员或指定班委可上传班费凭证');return}
   if(purpose==='submission'){const task=db.get('SELECT * FROM tasks WHERE id=?',entityId??'');if(!task||task.status!=='published'||!task.requires_submission)throw new HttpError(400,'作业或事务当前不可提交');if(!u.inClass||!db.get("SELECT 1 FROM participants WHERE task_id=? AND user_id=? AND status='required'",task.id,u.id))throw new HttpError(403,'你不在本次提交名单中');if(task.deadline&&task.deadline<now()&&!task.allow_late)throw new HttpError(400,'已超过提交截止时间');return}
   if(!isManager(u))throw new HttpError(403,'仅管理员或班委可以上传该资料');
@@ -62,7 +69,12 @@ export function canReadFile(db:Store,u:User|null,f:any):boolean {
   if(f.purpose==='submission'){return f.owner_id===u.id||isManager(u)&&db.all('SELECT attachments FROM submissions WHERE task_id=?',f.entity_id).some(r=>hasId(r.attachments,f.id))}
   if(f.purpose==='resource'){const r=db.get('SELECT * FROM resources WHERE id=?',f.entity_id);if(!r)return !f.entity_id&&f.owner_id===u.id&&isManager(u);return (isManager(u)||r.status==='published'&&hasId(r.attachments,f.id))}
   if(f.purpose==='task-attachment'){const t=db.get('SELECT * FROM tasks WHERE id=?',f.entity_id);if(!t)return !f.entity_id&&f.owner_id===u.id&&isManager(u);return isManager(u)||['published','archived'].includes(t.status)&&hasId(t.attachments,f.id)}
-  if(f.purpose==='avatar'){const m=db.get('SELECT profile FROM users WHERE id=? AND active=1',f.entity_id);return !!m&&json<any>(m.profile,{}).avatarFileId===f.id||!f.entity_id&&f.owner_id===u.id&&isManager(u)}
+  if(f.purpose==='avatar'){
+    const member=db.get('SELECT profile FROM users WHERE id=? AND active=1',f.entity_id);
+    if(!member)return false;
+    if(json<any>(member.profile,{}).avatarFileId===f.id)return true;
+    return f.owner_id===u.id&&!!f.expires_at&&(f.entity_id===u.id||isManager(u));
+  }
   return !f.entity_id&&f.owner_id===u.id&&isManager(u);
 }
 function metadata(f: any, includeOwnership = true) {
@@ -75,7 +87,21 @@ export function validateAttachments(db:Store,user:User,ids:string[],purpose:stri
   for(const id of ids){const f=db.get('SELECT * FROM files WHERE id=?',id);if(!f||f.status!=='ready'||f.purpose!==purpose||(f.expires_at&&f.expires_at<now()))throw new HttpError(400,'附件尚未完成上传或用途不匹配');if(f.entity_id&&f.entity_id!==entityId)throw new HttpError(403,'附件属于其他记录');if(f.owner_id!==user.id&&!(isManager(user)&&f.entity_id===entityId&&purpose!=='submission'))throw new HttpError(403,'不能使用其他人的附件');uploadAccess(db,user,purpose,entityId)}
 }
 export function bindAttachments(db:Store,ids:string[],entityId:string){for(const id of ids)db.run('UPDATE files SET entity_id=?,expires_at=NULL WHERE id=?',entityId,id);}
-function sniff(f:any,b:Buffer){const ext=extname(f.name).toLowerCase();if(ext==='.pdf')return b.subarray(0,5).toString()==='%PDF-';if(ext==='.png')return b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));if(['.jpg','.jpeg'].includes(ext))return b[0]===255&&b[1]===216;if(ext==='.webp')return b.subarray(0,4).toString()==='RIFF'&&b.subarray(8,12).toString()==='WEBP';if(['.zip','.docx','.xlsx','.pptx'].includes(ext))return b[0]===80&&b[1]===75;if(['.doc','.xls','.ppt'].includes(ext))return b.subarray(0,4).equals(Buffer.from([208,207,17,224]));return !b.includes(0);}
+
+// Bind the replacement and retire the old object in the caller's database transaction.
+// Storage deletion is deferred to the existing cleanup command.
+export function replaceAvatar(db:Store,actor:User,userId:string,previousId:string|null,nextId:string|null){
+  if(previousId===nextId)return;
+  if(nextId){
+    const file=db.get('SELECT * FROM files WHERE id=?',nextId);
+    if(file&&file.owner_id!==actor.id)throw new HttpError(403,'不能使用其他人的头像上传');
+    validateAttachments(db,actor,[nextId],'avatar',userId);
+    if(file.size>maxAvatarSize||!avatarTypes.has(file.mime))throw new HttpError(400,'头像仅支持不超过 5 MiB 的 JPG、PNG、WebP 或 GIF 图片');
+    bindAttachments(db,[nextId],userId);
+  }
+  if(previousId)db.run("UPDATE files SET expires_at=? WHERE id=? AND purpose='avatar' AND entity_id=?",new Date(Date.now()-1).toISOString(),previousId,userId);
+}
+function sniff(f:any,b:Buffer){const ext=extname(f.name).toLowerCase();if(ext==='.gif')return b.length>=13&&['GIF87a','GIF89a'].includes(b.subarray(0,6).toString())&&b.readUInt16LE(6)>0&&b.readUInt16LE(8)>0;if(ext==='.pdf')return b.subarray(0,5).toString()==='%PDF-';if(ext==='.png')return b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));if(['.jpg','.jpeg'].includes(ext))return b[0]===255&&b[1]===216;if(ext==='.webp')return b.subarray(0,4).toString()==='RIFF'&&b.subarray(8,12).toString()==='WEBP';if(['.zip','.docx','.xlsx','.pptx'].includes(ext))return b[0]===80&&b[1]===75;if(['.doc','.xls','.ppt'].includes(ext))return b.subarray(0,4).equals(Buffer.from([208,207,17,224]));return !b.includes(0);}
 async function previewContent(db: Store, f: any) {
   if (!previewable(f)) throw new HttpError(415, '此文件类型暂不支持预览，请下载后打开');
   if (f.size <= 0 || f.size > maxPreviewSize) throw new HttpError(413, '预览文件须非空且不超过 20 MB');
@@ -99,7 +125,7 @@ function sendPreview(reply: FastifyReply, f: any, bytes: Buffer) {
 export function registerFiles(app:FastifyInstance,db:Store,storage:StorageAdapter=new CosStorage()){
   stores.set(db,storage);
   app.get('/api/status',async req=>{requireUser(req);return {cosConfigured:storage.configured}});
-  app.post('/api/files/upload',async req=>{const u=requireUser(req),v=parse(z.object({name:z.string().trim().min(1).max(180).refine(s=>!/[\\/\x00-\x1f]/.test(s),'文件名无效'),size:z.number().int().positive().max(20*1024*1024),mime:z.string().max(200).default(''),purpose:z.enum(['task-attachment','submission','resource','receipt','avatar','class-photo']),entityId:z.string().optional()}),req.body);uploadAccess(db,u,v.purpose,v.entityId);const s=neededStorage(db),ext=extname(v.name).toLowerCase(),mime=types[ext];if(!mime)throw new HttpError(400,'不支持此文件类型');if(['avatar','class-photo'].includes(v.purpose)&&!mime.startsWith('image/'))throw new HttpError(400,'请选择图片');const id=uid(),key=`classroom/${v.purpose}/${uid()}${ext}`,signed=await s.uploadUrl(key,mime,v.size);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',id,v.name,v.size,mime,key,v.purpose,v.entityId??null,u.id,'pending',now(),new Date(Date.now()+86400000+600000).toISOString());return{fileId:id,...signed}});
+  app.post('/api/files/upload',async req=>{const u=requireUser(req),v=parse(z.object({name:z.string().trim().min(1).max(180).refine(s=>!/[\\/\x00-\x1f]/.test(s),'文件名无效'),size:z.number().int().positive().max(20*1024*1024),mime:z.string().max(200).default(''),purpose:z.enum(['task-attachment','submission','resource','receipt','avatar','class-photo']),entityId:z.string().optional()}),req.body);uploadAccess(db,u,v.purpose,v.entityId);const ext=extname(v.name).toLowerCase(),mime=types[ext];if(!mime)throw new HttpError(400,'不支持此文件类型');if(v.purpose==='avatar'&&(v.size>maxAvatarSize||!avatarTypes.has(mime)))throw new HttpError(400,'头像仅支持不超过 5 MiB 的 JPG、PNG、WebP 或 GIF 图片');const s=neededStorage(db);if(['avatar','class-photo'].includes(v.purpose)&&!mime.startsWith('image/'))throw new HttpError(400,'请选择图片');const id=uid(),key=`classroom/${v.purpose}/${uid()}${ext}`,signed=await s.uploadUrl(key,mime,v.size);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',id,v.name,v.size,mime,key,v.purpose,v.entityId??null,u.id,'pending',now(),new Date(Date.now()+86400000+600000).toISOString());return{fileId:id,...signed}});
   app.post<{Params:{id:string}}>('/api/files/:id/confirm',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f||f.owner_id!==u.id)throw new HttpError(404,'上传记录不存在');uploadAccess(db,u,f.purpose,f.entity_id);if(f.status==='ready')return metadata(f);if(f.status!=='pending'||f.expires_at<now())throw new HttpError(400,'上传记录已过期');const s=neededStorage(db),head=await s.head(f.object_key);if(head.size!==f.size||head.mime!==f.mime)throw new HttpError(400,'实际文件大小或类型与声明不符');if(!sniff(f,await s.readHead(f.object_key)))throw new HttpError(400,'文件内容与类型不符');uploadAccess(db,u,f.purpose,f.entity_id);const result=db.run("UPDATE files SET status='ready' WHERE id=? AND status='pending'",f.id);if(!result.changes)throw new HttpError(409,'文件状态已改变，请重新上传');return metadata({...f,status:'ready'})});
   app.get<{Params:{id:string}}>('/api/files/:id',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f)throw new HttpError(404,'文件不存在');if(!canReadFile(db,u,f))throw new HttpError(403,'无权读取此文件');return metadata(f,f.purpose!=='receipt'||financeRead(u))});
   app.post<{Params:{id:string}}>('/api/files/:id/download',async req=>{

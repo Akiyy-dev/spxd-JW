@@ -1,7 +1,7 @@
 import { ApiError } from './api'
 
 export const isPreviewableMime = (mime: string): boolean =>
-  ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'].includes(mime)
+  ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime)
 
 export async function createFilePreview(id: string, signal?: AbortSignal) {
   const response = await fetch(`/api/files/${encodeURIComponent(id)}/preview`, {

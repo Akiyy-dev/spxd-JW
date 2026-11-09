@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Archive, ExternalLink, FileText, History, KeyRound, Pencil, Plus, Search, ShieldCheck, Trash2, UserRoundPlus } from 'lucide-react'
 import { api, dateCN, dateLabel, timestamp, useQuery } from './api'
 import { createId } from './id'
+import { Avatar } from './avatar'
 import { roleNames, type ClassData, type Duty, type Member, type Resource, type Role, type User } from './types'
 import { AsyncForm, Badge, checked, Empty, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 
@@ -87,19 +88,6 @@ function ResourceHistory({item, close}: {item: Resource; close: () => void}) {
   </Modal>
 }
 
-function MemberAvatar({member}: {member: Member}) {
-  const [url, setUrl] = useState('')
-  const id = member.avatarFileId
-  useEffect(() => {
-    if (!id) return
-    let active = true
-    api<{url: string; previewAvailable: boolean}>('/files/' + id + '/download', 'POST', {preview: true}).then(result => {
-      if (active && result.previewAvailable) setUrl(result.url)
-    }).catch(() => {})
-    return () => {active = false}
-  }, [id])
-  return <span className="avatar member-avatar">{url ? <img src={url} alt="" onError={() => setUrl('')}/> : member.name.slice(0, 1)}</span>
-}
 
 export function ClassPage({manager, changed}: {manager: boolean; changed: () => void}) {
   const info = useQuery<ClassData>('/class')
@@ -121,14 +109,14 @@ export function ClassPage({manager, changed}: {manager: boolean; changed: () => 
       </Panel>
       <div className="dashboard-grid">
         <Panel title="班委分工" detail="班级日常事务的联系人">
-          {committees?.length ? <div className="rows">{committees.map(member => <div key={member.id} className="list-row"><MemberAvatar member={member}/><span><strong>{member.name}</strong><small>{member.position || '班委'}</small></span>{manager && <button className="btn quiet row-tail" onClick={() => setEditor(member)}>编辑</button>}</div>)}</div> : <Empty>暂无班委分工记录。</Empty>}
+          {committees?.length ? <div className="rows">{committees.map(member => <div key={member.id} className="list-row"><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><span><strong>{member.name}</strong><small>{member.position || '班委'}</small></span>{manager && <button className="btn quiet row-tail" onClick={() => setEditor(member)}>编辑</button>}</div>)}</div> : <Empty>暂无班委分工记录。</Empty>}
         </Panel>
         <Panel title="值日安排" detail="按日期查看区域与负责成员" actions={manager && <button className="btn quiet" onClick={() => setEditor('duties')}>编辑安排</button>}>
           {data.duties.length ? <div className="rows">{[...data.duties].sort((a,b) => a.date.localeCompare(b.date)).map(duty => <div className="list-row" key={duty.id}><span><strong>{duty.area}</strong><small>{dateLabel(duty.date)} · {duty.names.join('、') || '待分配'}</small></span></div>)}</div> : <Empty>暂无值日安排。</Empty>}
         </Panel>
       </div>
       <Panel title="班级成员" detail={`在册成员 ${data.members.length} 人`}>
-        {data.members.length ? <div className="member-grid">{data.members.map(member => <div className="member-card" key={member.id}><MemberAvatar member={member}/><div><strong>{member.name}</strong><small>{member.position || roleNames[member.role]}</small></div>{manager && <button aria-label={`编辑 ${member.name}`} className="btn quiet icon row-tail" onClick={() => setEditor(member)}><Pencil size={16}/></button>}</div>)}</div> : <Empty>暂无成员信息。</Empty>}
+        {data.members.length ? <div className="member-grid">{data.members.map(member => <div className="member-card" key={member.id}><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><div><strong>{member.name}</strong><small>{member.position || roleNames[member.role]}</small></div>{manager && <button aria-label={`编辑 ${member.name}`} className="btn quiet icon row-tail" onClick={() => setEditor(member)}><Pencil size={16}/></button>}</div>)}</div> : <Empty>暂无成员信息。</Empty>}
       </Panel>
     </>}
     {data && editor === 'settings' && <ClassSettings data={data} close={close} saved={saved}/>}
@@ -205,7 +193,7 @@ export function Accounts({changed}: {changed: () => void}) {
       <Feedback {...users} retry={users.reload}/>
       {notice && <p className="feedback" role="status">{notice}</p>}
       {results && (results.length ? <div className="rows">{results.map(user => <div className="list-row account-row" key={user.id}>
-        <span className="avatar">{user.name.slice(0, 1)}</span><span><strong>{user.name}</strong><small>{user.username} · {roleNames[user.role]}</small></span>
+        <Avatar id={user.avatarFileId} name={user.name}/><span><strong>{user.name}</strong><small>{user.username} · {roleNames[user.role]}</small></span>
         <div className="badge-group row-tail">{user.role === 'admin' ? <><Badge tone="good"><ShieldCheck size={15}/>全部管理权限</Badge><Badge>{user.inClass ? '已纳入班级名单' : '未纳入班级名单'}</Badge></> : user.role === 'committee' && user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
         <div className="actions"><button className="btn quiet" onClick={() => setEditor({action: 'edit', user})}><Pencil size={16}/>编辑</button><button className="btn quiet" onClick={() => setEditor({action: 'reset', user})}><KeyRound size={16}/>重置密码</button></div>
       </div>)}</div> : <Empty>没有符合条件的账号。</Empty>)}

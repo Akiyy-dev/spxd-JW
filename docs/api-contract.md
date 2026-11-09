@@ -18,6 +18,7 @@ GET /api/auth/me -> `{user:User|null}`
 POST /api/auth/login {username,password} -> `{user}` (HttpOnly session cookie)
 POST /api/auth/logout -> {ok:true}
 POST /api/auth/password {currentPassword,newPassword} -> {user}
+PUT /api/auth/avatar {avatarFileId:string|null,version:number} -> {user}; authenticated and initial password change completed. Updates only the caller's avatar; null removes it. User responses expose avatarFileId from the display profile. A new file must be confirmed, have purpose avatar and belong to this target account. The mutation increments the account and class-profile versions to reject stale edits.
 GET /api/public/config -> `{name,subtitle,introduction,academicYear,semesterStart,semesterEnd,holidays:string[],demo:boolean}`
 GET /api/status (authenticated) -> `{cosConfigured:boolean}`
 GET /api/users (admin) -> User[]
@@ -85,10 +86,11 @@ POST /api/finance/export (admin or finance manager) -> {fileId} XLSX via createE
 
 File {id,name,size,mime,status:'pending'|'ready',purpose,entityId,ownerId,createdAt}.
 POST /api/files/upload {name,size,mime,purpose:'task-attachment'|'submission'|'resource'|'receipt'|'avatar'|'class-photo',entityId?} -> {fileId,url,headers}. Draft new-resource files may use no entityId, manager-only; staged submission needs existing task ID. No COS -> 503 explicit.
+Avatar uploads require an active target account in entityId. Activated users may upload for themselves; managers may still maintain other members. Avatars are limited to 5 MiB and JPEG/PNG/WebP/GIF. Staged avatars are visible only to their uploader; assigned avatars are visible to activated authenticated users. Replacing/removing an avatar expires the previous object for cleanup and immediately revokes new application access to it. GIF previews preserve the original bytes and animation.
 POST /api/files/:id/confirm -> File; link only after verified successful upload, module mutation must validate binding ACL and change state (shared `validateAttachments(db,user,ids,purpose,entityId)` and `bindAttachments(db,ids,entityId)` exports).
 GET /api/files/:id -> safe File metadata, authorized.
 POST /api/files/:id/download {preview?:boolean} -> {url,previewAvailable:boolean}; authorized. Downloads use short-lived COS links. For supported preview requests, url is the authenticated same-origin `/api/files/:id/preview` endpoint and previewAvailable is true without COS_PREVIEW_DOMAIN. Unsupported formats return a download link with previewAvailable false.
-GET /api/files/:id/preview -> verified PDF/PNG/JPEG/WebP bytes; rechecks session, current file lifecycle and object-level visibility. Reads private COS, checks size (maximum 20 MiB), filename/type and signature; returns no-store, nosniff, attachment disposition and sandbox CSP. Frontend fetches bytes with session cookies and displays a disposable Blob URL; close aborts pending fetches and revokes the URL. No public permanent preview links.
+GET /api/files/:id/preview -> verified PDF/PNG/JPEG/WebP/GIF bytes; rechecks session, current file lifecycle and object-level visibility. Reads private COS, checks size (maximum 20 MiB), filename/type and signature; returns no-store, nosniff, attachment disposition and sandbox CSP. Frontend fetches bytes with session cookies and displays a disposable Blob URL; close aborts pending fetches and revokes the URL. No public permanent preview links.
 PDF content is rendered to a bounded canvas by a dynamically imported PDF.js engine, with local worker/font/CMap/decoder assets and previous/next controls. Images use Blob URLs. Closing a preview cancels rendering/destroys its worker; Escape stops at the top dialog, preserving unsaved editor data underneath.
 GET /api/public/photo/:id -> image bytes only for the currently configured public class photo; other files remain protected.
 `StorageAdapter` methods `configured:boolean`, `uploadUrl(key,mime,size):Promise<{url,headers}>`, `head(key):Promise<{size,mime}>`, `readHead(key):Promise<Buffer>`, `read(key):Promise<Buffer>`, `downloadUrl(key,filename,preview?):Promise<string>`, `put(key,buffer,mime):Promise<void>`, `remove(key):Promise<void>`.

@@ -3,13 +3,23 @@ import { test } from 'node:test';
 import { createFilePreview, isPreviewableMime } from '../src/file-preview.ts';
 
 test('only supported PDF and raster images expose a preview action', () => {
-  for (const mime of ['application/pdf', 'image/png', 'image/jpeg', 'image/webp']) {
+  for (const mime of ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']) {
     assert.equal(isPreviewableMime(mime), true, mime);
   }
-  for (const mime of ['image/svg+xml', 'image/gif', 'text/html', 'application/zip',
+  for (const mime of ['image/svg+xml', 'text/html', 'application/zip',
     'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']) {
     assert.equal(isPreviewableMime(mime), false, mime);
   }
+});
+
+test('GIF previews preserve the original animation bytes', async t => {
+  const bytes = Uint8Array.from([71,73,70,56,57,97,1,0,1,0,128,0,0,255,0,0,0,0,0,33,249,4,0,10,0,0,0,44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,33,249,4,0,10,0,0,0,44,0,0,0,0,1,0,1,0,128,0,255,0,0,0,0,2,2,68,1,0,59]);
+  t.mock.method(globalThis, 'fetch', async () => new Response(bytes, {headers:{'Content-Type':'image/gif'}}));
+  const preview = await createFilePreview('animated-avatar');
+  try {
+    assert.equal(preview.mime, 'image/gif');
+    assert.deepEqual(new Uint8Array(await preview.blob.arrayBuffer()), bytes);
+  } finally {preview.dispose();}
 });
 
 test('loads authenticated preview bytes into a disposable Blob despite attachment disposition', async t => {
