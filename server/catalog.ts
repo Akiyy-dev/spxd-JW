@@ -11,7 +11,7 @@ const resourceChanges=z.object({title:resourceSchema.shape.title.optional(),desc
 function resource(r:any){return{id:r.id,title:r.title,description:r.description,category:r.category,url:r.url,attachments:json(r.attachments,[]),pinned:!!r.pinned,status:r.status,version:r.version,createdAt:r.created_at,updatedAt:r.updated_at,authorName:r.author_name??''}}
 const configSchema=z.object({name:z.string().trim().min(1).max(60).optional(),subtitle:z.string().max(150).optional(),introduction:z.string().max(10000).optional(),academicYear:z.string().max(60).optional(),semesterStart:dateSchema.optional(),semesterEnd:dateSchema.optional(),holidays:z.array(dateSchema).max(400).optional(),photoFileId:z.string().optional()});
 function visible(u:User,status:string){return status==='published'||status==='draft'&&can(u,'resources.drafts.read')||status==='archived'&&can(u,'resources.archived.read')}
-function classData(db:Store){const config=db.setting('class',defaultConfig);return{config,members:db.all("SELECT id,name,role,profile FROM users WHERE active=1 AND (role IN ('student','committee') OR in_class=1) ORDER BY role,name").map(r=>{const p=json<any>(r.profile,{});return{id:r.id,name:p.displayName||r.name,role:r.role,position:p.position??'',avatarFileId:p.avatarFileId??''}}),duties:db.setting('duties',[]),version:config.version}}
+function classData(db:Store){const config=db.setting('class',defaultConfig);return{config,members:db.all("SELECT id,name,role,profile FROM users WHERE active=1 AND (role IN ('student','committee') OR in_class=1) ORDER BY role,name").map(r=>{const p=json<any>(r.profile,{});return{id:r.id,name:p.displayName||r.name,role:r.role,position:p.position??'',avatarFileId:p.avatarFileId??''}}),version:config.version}}
 
 export function registerCatalog(app:FastifyInstance,db:Store){
   app.get('/api/resources',async req=>{const u=requireUser(req);return db.all('SELECT r.*,u.name author_name FROM resources r JOIN users u ON u.id=r.author_id ORDER BY pinned DESC,updated_at DESC').filter(r=>visible(u,r.status)).map(resource)});
@@ -49,11 +49,14 @@ export function registerCatalog(app:FastifyInstance,db:Store){
   });
   app.get('/api/class',async req=>{requireUser(req);return classData(db)});
   app.put('/api/class',async req=>{
-    const u=requireUser(req),v=parse(z.object({version:z.number().int(),config:configSchema.optional(),members:z.array(z.object({id:z.string(),name:z.string().max(100).optional(),displayName:z.string().max(100).optional(),position:z.string().max(100).optional(),avatarFileId:z.string().optional()})).max(500).optional(),duties:z.array(z.object({id:z.string(),date:dateSchema,area:z.string().min(1).max(100),names:z.array(z.string().min(1).max(100)).max(100)})).max(1000).optional()}),req.body);
+    const u=requireUser(req),v=parse(z.object({version:z.number().int(),config:configSchema.optional(),members:z.array(z.object({id:z.string(),name:z.string().max(100).optional(),displayName:z.string().max(100).optional(),position:z.string().max(100).optional(),avatarFileId:z.string().optional()})).max(500).optional(),duties:z.unknown().optional()}),req.body);
     if(v.config!==undefined)requirePermission(req,'class.settings.edit');
     if(v.members!==undefined)requirePermission(req,'class.members.edit');
-    if(v.duties!==undefined)requirePermission(req,'class.duties.edit');
-    if(v.config===undefined&&v.members===undefined&&v.duties===undefined)throw new HttpError(400,'请填写要修改的内容');
+    if(Object.hasOwn(v,'duties')){
+      requirePermission(req,'class.duties.edit');
+      throw new HttpError(409,'值日安排已移至独立页面，请刷新后前往值日安排修改');
+    }
+    if(v.config===undefined&&v.members===undefined)throw new HttpError(400,'请填写要修改的内容');
     return db.transaction(()=>{
       const old=db.setting('class',defaultConfig);conflict(old.version,v.version);const next={...old,...v.config,version:old.version+1};
       if(next.semesterStart>next.semesterEnd)throw new HttpError(400,'学期结束日期不能早于开始日期');
@@ -64,7 +67,7 @@ export function registerCatalog(app:FastifyInstance,db:Store){
         const p=json<any>(row.profile,{});if(m.avatarFileId!==undefined)replaceAvatar(db,u,m.id,p.avatarFileId||null,m.avatarFileId||null);
         db.run('UPDATE users SET profile=?,version=version+1 WHERE id=?',JSON.stringify({...p,displayName:m.displayName??m.name??p.displayName,position:m.position??p.position,avatarFileId:m.avatarFileId??p.avatarFileId}),m.id);
       }
-      db.setSetting('class',next);if(v.duties)db.setSetting('duties',v.duties);db.audit(u.id,'class.update','class',{version:next.version});return classData(db);
+      db.setSetting('class',next);db.audit(u.id,'class.update','class',{version:next.version});return classData(db);
     });
   });
 }

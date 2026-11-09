@@ -134,6 +134,7 @@ for(const operation of [
   {label:'timetable templates',method:'POST' as const,url:'/api/timetable/templates',payload:{name:'Unauthorized template',selectionVersion:0,periods:[{id:1,label:'First',start:'08:00',end:'08:45'}],courses:[]},table:'timetable_templates'},
 ])test(`${operation.label} authorization reflects grant, role, status and session changes while the body is being parsed`,async t=>{
   const {app,db,login,user}=await fixture(t),actor=user('actor','admin',PERMISSION_KEYS);
+  const initialCount=db.get(`SELECT count(*) n FROM ${operation.table}`).n;
   // preValidation runs after request-body parsing and before authentication must
   // make its final snapshot. This models an administrator revoking access while
   // a slow/chunked request body was still in flight, without timing flakiness.
@@ -151,7 +152,7 @@ for(const operation of [
     const cookies=await login('actor');
     const result=await app.inject({method:operation.method,url:operation.url,payload:operation.payload,cookies,headers:{'x-auth-change':change}});
     assert.equal(result.statusCode,change==='disabled'||change==='session'?401:403,`${change}: ${result.body}`);
-    assert.equal(db.get(`SELECT count(*) n FROM ${operation.table}`).n,0);
+    assert.equal(db.get(`SELECT count(*) n FROM ${operation.table}`).n,initialCount);
     assert.equal(db.get('SELECT count(*) n FROM audit').n,0);
   }
 });

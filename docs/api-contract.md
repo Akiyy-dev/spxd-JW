@@ -65,8 +65,17 @@ Writes check template content and active-selection versions in a transaction; st
 
 Resource {id,title,description,category,url,attachments:string[],pinned:boolean,status:'draft'|'published'|'archived',version,updatedAt,authorName}.
 GET /api/resources -> visible Resource[]; POST /api/resources -> resource (default draft; create grant, plus publish if published); PUT /api/resources/:id {changes,version} -> resource. Actual content changes require edit; changes to already published content also require publish. Status-only publish/archive require their own grants, independently of edit. Draft/archived reads require the corresponding grants. GET /api/resources/:id/history requires history.read, current resource visibility and filters each snapshot by its status visibility. Omitted update fields retain their stored values.
-GET /api/class -> `{config, members:[{id,name,role,position,avatarFileId}], duties:[{id,date,area,names:string[]}],version}` authenticated.
-PUT /api/class {config?,members?,duties?,version}; each supplied section requires its exact `class.settings.edit`, `class.members.edit`, `class.duties.edit` grant and the whole operation is atomic. Only display profiles (name/position/avatar) change, not account identity or role; protected account profiles require Admin. Config includes name,subtitle,introduction,academicYear,semesterStart,semesterEnd,holidays,photoFileId. User account name changes via users; member display can use displayName.
+GET /api/class -> `{config, members:[{id,name,role,position,avatarFileId}],version}` authenticated.
+PUT /api/class {config?,members?,version}; each supplied section requires its exact `class.settings.edit` or `class.members.edit` grant and the whole operation is atomic. Only display profiles (name/position/avatar) change, not account identity or role; protected account profiles require Admin. Config includes name,subtitle,introduction,academicYear,semesterStart,semesterEnd,holidays,photoFileId. User account name changes via users; member display can use displayName. Legacy requests containing duties are rejected atomically with a refresh/migration message after the duty permission check, so stale clients cannot overwrite the weekly schedule or partially update the class.
+
+## Weekly duties
+
+`Duty {id:string,weekday:1|2|3|4|5|6|7,area:string,names:string[]}`. Monday=1, Sunday=7; each weekday can have multiple areas, and the schedule repeats weekly. All seven days display even when empty.
+
+GET /api/duties -> `{duties:Duty[],version:number}`; authenticated and initial password change completed.
+PUT /api/duties `{duties:Duty[],version:number}` -> the updated schedule; requires existing `class.duties.edit`. Validates weekday, unique IDs, trimmed nonempty area, names and size limits. Uses a separate version/transaction/audit from class data; stale edits return 409, no partial writes.
+
+Stored in settings.weekly_duties. Migration 5 copies legacy dated settings.duties records to corresponding civil-date weekdays and preserves the exact legacy setting as backup. It trims IDs and regenerates blank, oversized or duplicate normalized IDs without losing rows or display content. It never merges rows or overwrites an existing weekly schedule; reruns do not repeat migration. Invalid legacy data fails explicitly without silently deleting records. Frontend route `/duties` is hidden from guests; permission catalog groups the retained grant under 值日安排.
 
 ## Finance
 

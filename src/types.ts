@@ -5,8 +5,8 @@ export const roleNames: Record<Role, string> = {super_admin: 'Admin', admin: 'ç®
 
 export type Config = {name: string; subtitle: string; introduction: string; academicYear: string; semesterStart: string; semesterEnd: string; holidays: string[]; demo: boolean; photoFileId?: string}
 export type Member = {id: string; name: string; displayName?: string; role: Role; position: string; avatarFileId: string | null}
-export type Duty = {id: string; date: string; area: string; names: string[]}
-export type ClassData = {config: Config; members: Member[]; duties: Duty[]; version: number}
+export type {Duty, DutiesData, Weekday} from '../shared/duties.ts'
+export type ClassData = {config: Config; members: Member[]; version: number}
 
 export type Period = {id: number; label: string; start: string; end: string}
 export type Course = {id: string; name: string; teacher: string; room: string; day: number; startPeriod: number; endPeriod: number; color: string; notes: string}

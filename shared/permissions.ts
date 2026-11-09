@@ -34,7 +34,7 @@ export const PERMISSIONS:readonly Definition[] = [
   ...([['history','查看修订历史'],['entries.create','新增账目'],['entries.edit','修订账目'],['entries.void','作废账目'],['fees.create','新增缴费事项'],['fees.edit','编辑缴费事项'],['payments.create','新增实缴'],['payments.edit','修订实缴'],['payments.void','作废实缴'],['export','导出']] as const).map(([operation,label])=>item(`finance.${operation}`,'班费',label,['finance.read'])),
   item('class.settings.edit','班级信息','修改班级设置 / 简介 / 照片'),
   item('class.members.edit','班级信息','维护成员展示资料 / 头像'),
-  item('class.duties.edit','班级信息','维护值日安排'),
+  item('class.duties.edit','值日安排','维护每周值日安排'),
   item('accounts.read','成员账号','查看班委和学生账号'),
   ...([['create','创建账号（含批量）'],['edit','编辑基本资料'],['roles','调整班委 / 学生身份'],['status','启用 / 停用'],['resetPassword','重置密码']] as const).map(([operation,label])=>item(`accounts.${operation}`,'成员账号',label,['accounts.read'])),
 ];

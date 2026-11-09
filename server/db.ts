@@ -3,6 +3,32 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {PERMISSION_KEYS} from '../shared/permissions.ts';
+import {z} from 'zod';
+import {dateSchema} from './common.ts';
+import {DUTY_LIMITS, type Duty, type Weekday} from '../shared/duties.ts';
+
+function legacyWeeklyDuties(value:string):Duty[] {
+  // Keep every legacy row and its display content. Repair IDs for independent
+  // editing while retaining the original settings value as an exact backup.
+  const legacySchema=z.array(z.object({id:z.string(),date:dateSchema,area:z.string().min(1).max(100),names:z.array(z.string().min(1).max(100)).max(100)})).max(1000);
+  try {
+    const rows=legacySchema.parse(JSON.parse(value));
+    const usableId=(id:string)=>id.length>0&&id.length<=DUTY_LIMITS.id;
+    // Reserve all valid IDs before generating replacements, including IDs in
+    // later rows, so a generated UUID cannot replace an existing valid ID.
+    const reserved=new Set(rows.map(row=>row.id.trim()).filter(usableId)), used=new Set<string>();
+    return rows.map(({date,...duty})=>{
+      let id=duty.id.trim();
+      if(!usableId(id)||used.has(id)){
+        do {id=randomUUID();} while(reserved.has(id)||used.has(id));
+      }
+      used.add(id);
+      return {...duty,id,weekday:(new Date(date+'T00:00:00.000Z').getUTCDay()||7) as Weekday};
+    });
+  } catch {
+    throw new Error('旧值日安排迁移失败：数据格式或日期无效，原始 duties 设置已保留，请修复后重启');
+  }
+}
 
 export class Store {
   sqlite: DatabaseSync;
@@ -73,6 +99,19 @@ export class Store {
           this.run("INSERT INTO migrations VALUES(4,datetime('now'))");
         });
       } finally { this.sqlite.exec('PRAGMA foreign_keys=ON'); }
+    }
+    try {
+      this.transaction(() => {
+        if (this.get('SELECT version FROM migrations WHERE version=5')) return;
+        if (!this.get('SELECT key FROM settings WHERE key=?','weekly_duties')) {
+          const legacy=this.get<{value:string}>('SELECT value FROM settings WHERE key=?','duties');
+          this.setSetting('weekly_duties',{duties:legacy?legacyWeeklyDuties(legacy.value):[],version:1});
+        }
+        this.run("INSERT INTO migrations VALUES(5,datetime('now'))");
+      });
+    } catch (error) {
+      this.sqlite.close();
+      throw error;
     }
   }
   get<T = any>(sql: string, ...params: any[]): T | undefined { return this.sqlite.prepare(sql).get(...params) as T | undefined; }

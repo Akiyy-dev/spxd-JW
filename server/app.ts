@@ -4,6 +4,7 @@ import { registerAuth, registerRequestAuth } from './auth.ts';
 import { registerCatalog } from './catalog.ts';
 import { HttpError } from './common.ts';
 import { createStore, type Store } from './db.ts';
+import { registerDuties } from './duties.ts';
 import { registerFiles, type StorageAdapter } from './files.ts';
 import { registerFinance } from './finance.ts';
 import { registerTasks } from './tasks.ts';
@@ -35,6 +36,7 @@ export async function buildApp({db: suppliedDb, storage, logger = false}: {
   await registerTasks(app, db);
   await registerFinance(app, db);
   await registerCatalog(app, db);
+  await registerDuties(app, db);
   await registerTimetable(app, db);
   return app;
 }

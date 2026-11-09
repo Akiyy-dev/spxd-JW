@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { ArrowDownRight, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, ChevronRight, ClipboardList, FolderOpen, GitFork, GraduationCap, House, KeyRound, LogIn, LogOut, Menu, Settings2, UsersRound, Wallet, X } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, BookOpen, CalendarDays, ChevronRight, ClipboardList, FolderOpen, GitFork, GraduationCap, House, KeyRound, ListChecks, LogIn, LogOut, Menu, Settings2, UsersRound, Wallet, X } from 'lucide-react'
 import { api, dateCN, dateLabel, errorMessage, timestamp, useQuery } from './api'
 import { AsyncForm, Badge, Empty, Feedback, Field, PageTitle, Panel, val } from './ui'
 import { roleNames, type Config, type Task, type Timetable, type User } from './types'
@@ -12,6 +12,7 @@ const Resources = lazy(() => import('./catalog').then(module => ({default: modul
 const ClassPage = lazy(() => import('./catalog').then(module => ({default: module.ClassPage})))
 const Accounts = lazy(() => import('./accounts').then(module => ({default: module.Accounts})))
 const Finance = lazy(() => import('./finance').then(module => ({default: module.Finance})))
+const DutiesPage = lazy(() => import('./duties').then(module => ({default: module.DutiesPage})))
 
 const repositoryUrl = 'https://github.com/Akiyy-dev/spxd-JW'
 
@@ -27,6 +28,7 @@ const modules = [
   {path: '/', label: '班级首页', icon: House},
   {path: '/homework', label: '作业公告', icon: BookOpen},
   {path: '/timetable', label: '课程表', icon: CalendarDays},
+  {path: '/duties', label: '值日安排', icon: ListChecks},
   {path: '/affairs', label: '事务办理', icon: ClipboardList},
   {path: '/resources', label: '资料中心', icon: FolderOpen},
   {path: '/finance', label: '班费管理', icon: Wallet},
@@ -162,6 +164,7 @@ export function App() {
             navigate(newUser.mustChangePassword ? '/account' : from, {replace: true})
           }} />} />
           <Route path="/timetable" element={<TimetablePage user={user?.mustChangePassword ? null : user} />} />
+          <Route path="/duties" element={guard(user && <DutiesPage user={user} />)} />
           <Route path="/homework/*" element={guard(user && <Tasks key="homework" user={user} kind="homework" />)} />
           <Route path="/affairs/*" element={guard(user && <Tasks key="affairs" user={user} kind="affairs" />)} />
           <Route path="/resources" element={guard(user && <Resources user={user} />)} />

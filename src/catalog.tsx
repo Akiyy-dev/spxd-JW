@@ -1,9 +1,8 @@
 import { useState } from 'react'
-import { Archive, ExternalLink, FileText, History, Pencil, Plus, Search, Send, Trash2 } from 'lucide-react'
-import { api, dateCN, dateLabel, timestamp, useQuery } from './api'
-import { createId } from './id'
+import { Archive, ExternalLink, FileText, History, Pencil, Plus, Search, Send } from 'lucide-react'
+import { api, dateCN, timestamp, useQuery } from './api'
 import { Avatar } from './avatar'
-import { roleNames, type ClassData, type Duty, type Member, type Resource, type User } from './types'
+import { roleNames, type ClassData, type Member, type Resource, type User } from './types'
 import { AsyncForm, Badge, checked, Empty, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 import {can} from '../shared/permissions'
 
@@ -113,14 +112,14 @@ function ResourceHistory({item, close}: {item: Resource; close: () => void}) {
 
 export function ClassPage({user, changed}: {user:User; changed: () => void}) {
   const info = useQuery<ClassData>('/class')
-  const [editor, setEditor] = useState<'settings' | 'duties' | Member>()
+  const [editor, setEditor] = useState<'settings' | Member>()
   const [notice, setNotice] = useState('')
   const data = info.data
   const close = () => setEditor(undefined)
   const saved = () => {close(); info.reload(); changed(); setNotice('班级信息已更新。')}
   const committees = data?.members.filter(member => member.role === 'committee')
   return <div className="stack">
-    <PageTitle label="班级生活" title="班级信息" detail="查阅班级简介、班委分工、成员信息和值日安排。" actions={can(user,'class.settings.edit') && data && <button className="btn primary" onClick={() => setEditor('settings')}><Pencil size={16}/>编辑班级设置</button>}/>
+    <PageTitle label="班级生活" title="班级信息" detail="查阅班级简介、班委分工和成员信息。" actions={can(user,'class.settings.edit') && data && <button className="btn primary" onClick={() => setEditor('settings')}><Pencil size={16}/>编辑班级设置</button>}/>
     <Feedback {...info} retry={info.reload}/>
     {notice && <p className="feedback" role="status">{notice}</p>}
     {data && <>
@@ -129,20 +128,14 @@ export function ClassPage({user, changed}: {user:User; changed: () => void}) {
         <p className="prose">{data.config.introduction || '班级简介待补充。'}</p>
         {data.config.photoFileId && <img className="class-photo" alt="班级照片" src={'/api/public/photo/' + data.config.photoFileId}/>}
       </Panel>
-      <div className="dashboard-grid">
         <Panel title="班委分工" detail="班级日常事务的联系人">
           {committees?.length ? <div className="rows">{committees.map(member => <div key={member.id} className="list-row"><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><span><strong>{member.name}</strong><small>{member.position || '班委'}</small></span><MemberEditButton user={user} member={member} edit={()=>setEditor(member)}/></div>)}</div> : <Empty>暂无班委分工记录。</Empty>}
         </Panel>
-        <Panel title="值日安排" detail="按日期查看区域与负责成员" actions={can(user,'class.duties.edit') && <button className="btn quiet" onClick={() => setEditor('duties')}>编辑安排</button>}>
-          {data.duties.length ? <div className="rows">{[...data.duties].sort((a,b) => a.date.localeCompare(b.date)).map(duty => <div className="list-row" key={duty.id}><span><strong>{duty.area}</strong><small>{dateLabel(duty.date)} · {duty.names.join('、') || '待分配'}</small></span></div>)}</div> : <Empty>暂无值日安排。</Empty>}
-        </Panel>
-      </div>
       <Panel title="班级成员" detail={`在册成员 ${data.members.length} 人`}>
         {data.members.length ? <div className="member-grid">{data.members.map(member => <div className="member-card" key={member.id}><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><div><strong>{member.name}</strong><small>{member.position || roleNames[member.role]}</small></div><MemberEditButton user={user} member={member} edit={()=>setEditor(member)} compact/></div>)}</div> : <Empty>暂无成员信息。</Empty>}
       </Panel>
     </>}
     {data && editor === 'settings' && can(user,'class.settings.edit') && <ClassSettings data={data} close={close} saved={saved}/>}
-    {data && editor === 'duties' && can(user,'class.duties.edit') && <DutyEditor data={data} close={close} saved={saved}/>}
     {data && editor && typeof editor !== 'string' && canEditMember(user,editor) && <MemberEditor data={data} member={editor} close={close} saved={saved}/>}
   </div>
 }
@@ -170,24 +163,6 @@ function ClassSettings({data, close, saved}: {data: ClassData; close: () => void
         <Field label="休课日期" wide hint="每行填写一个日期，格式为 YYYY-MM-DD。"><textarea name="holidays" rows={4} defaultValue={config.holidays.join('\n')}/></Field>
         <UploadFiles ids={photo} setIds={setPhoto} purpose="class-photo" entityId="class" label="公开班级照片" max={1}/>
       </div>
-    </AsyncForm>
-  </Modal>
-}
-
-function DutyEditor({data, close, saved}: {data: ClassData; close: () => void; saved: () => void}) {
-  const [duties, setDuties] = useState(() => data.duties.map(duty => ({...duty, nameText: duty.names.join('、')})))
-  return <Modal title="值日安排" close={close} wide>
-    <AsyncForm cancel={close} submit={async () => {
-      const next: Duty[] = duties.map(({nameText, ...duty}) => ({...duty, area: duty.area.trim(), names: nameText.split(/[、，,]/).map(name => name.trim()).filter(Boolean)}))
-      await api('/class', 'PUT', {version: data.version, duties: next})
-      saved()
-    }}>
-      <div className="stack fields">{duties.map((duty, index) => {
-        const change = (patch: Partial<typeof duty>) => setDuties(duties.map(item => item.id === duty.id ? {...item, ...patch} : item))
-        return <div className="nested-panel" key={duty.id}><div className="split"><strong>安排 {index + 1}</strong><button type="button" className="btn quiet icon" aria-label={`移除安排 ${index + 1}`} onClick={() => setDuties(duties.filter(item => item.id !== duty.id))}><Trash2 size={17}/></button></div>
-          <div className="form-grid"><Field label="日期"><input type="date" required value={duty.date} onChange={event => change({date: event.target.value})}/></Field><Field label="值日区域"><input required value={duty.area} onChange={event => change({area: event.target.value})}/></Field><Field label="负责成员（姓名以顿号分隔）" wide><input value={duty.nameText} onChange={event => change({nameText: event.target.value})}/></Field></div>
-        </div>
-      })}<button type="button" className="btn" onClick={() => setDuties([...duties, {id: createId(), date: dateCN(), area: '', names: [], nameText: ''}])}><Plus size={17}/>添加安排</button></div>
     </AsyncForm>
   </Modal>
 }

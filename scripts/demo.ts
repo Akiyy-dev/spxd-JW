@@ -7,7 +7,7 @@ const accounts=[{username:'admin',name:'班级 Admin',role:'super_admin' as cons
 const users=accounts.map(v=>createUser(db,{...v,mustChangePassword:false})),manager=users[1],students=users.filter(u=>u.role!=='super_admin');
 const today=shanghaiDate(),tomorrow=new Date(Date.now()+86400000),weekLater=new Date(Date.now()+6*86400000);
 db.setSetting('class',{...defaultConfig,name:'班级空间',subtitle:'把日常小事，变成一起成长的故事。',introduction:'欢迎来到我们的班级空间。这里收藏每一堂课的收获，连接每一次协作，让学习与班级生活井井有条。\n\n这是用于预览的示例班级，所有姓名、作业与账目均为演示数据。',demo:true});
-db.setSetting('duties',[{id:uid(),date:today,area:'教室与公共区域',names:['周同学','吴同学']},{id:uid(),date:shanghaiDate(tomorrow),area:'教室与公共区域',names:['郑同学','王同学']}]);
+db.setSetting('weekly_duties',{duties:[{id:uid(),weekday:1,area:'教室',names:['周同学','吴同学']},{id:uid(),weekday:1,area:'公共区域',names:['郑同学','王同学']},{id:uid(),weekday:5,area:'教室与公共区域',names:['李同学','赵同学']}],version:1});
 for(const [i,u] of users.entries())if(u.role==='committee')db.run('UPDATE users SET profile=? WHERE id=?',JSON.stringify({position:i===1?'学习委员':'生活委员'}),u.id);
 const names=['程序设计基础','计算机应用','大学语文','数学','英语','体育与健康'];const colors=['#0f766e','#4f46e5','#c56b39','#4277a8','#9a5d8d','#668149'];
 const courses=Array.from({length:5},(_,d)=>[0,1,2].map((_,s)=>({id:uid(),name:names[(d+s)%6],teacher:['张老师','李老师','陈老师'][s],room:s===2&&d===2?'操场':`${301+d} 教室`,day:d+1,startPeriod:s*2+1,endPeriod:s*2+2,color:colors[(d+s)%6],notes:''}))).flat();
