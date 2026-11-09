@@ -3,8 +3,8 @@ import {createStore} from '../server/db.ts';import {createUser} from '../server/
 mkdirSync('data',{recursive:true});const path='data/demo.sqlite';
 if(existsSync(path)){console.log('演示数据库已存在，未覆盖。账号见 data/demo-accounts.txt。');process.exit(0)}
 const db=createStore(path),password=()=>randomBytes(12).toString('base64url');
-const accounts=[{username:'admin',name:'班级管理员',role:'admin' as const},{username:'committee',name:'林同学',role:'committee' as const},{username:'finance',name:'陈同学',role:'committee' as const,financeManage:true},{username:'student',name:'许同学',role:'student' as const},...['周同学','吴同学','郑同学','王同学','李同学','赵同学'].map((name,i)=>({username:`student${i+2}`,name,role:'student' as const}))].map(v=>({...v,password:password()}));
-const users=accounts.map(v=>createUser(db,{...v,mustChangePassword:false})),manager=users[1],students=users.filter(u=>u.role!=='admin');
+const accounts=[{username:'admin',name:'班级 Admin',role:'super_admin' as const},{username:'committee',name:'林同学',role:'committee' as const},{username:'finance',name:'陈同学',role:'committee' as const,financeManage:true},{username:'student',name:'许同学',role:'student' as const},...['周同学','吴同学','郑同学','王同学','李同学','赵同学'].map((name,i)=>({username:`student${i+2}`,name,role:'student' as const}))].map(v=>({...v,password:password()}));
+const users=accounts.map(v=>createUser(db,{...v,mustChangePassword:false})),manager=users[1],students=users.filter(u=>u.role!=='super_admin');
 const today=shanghaiDate(),tomorrow=new Date(Date.now()+86400000),weekLater=new Date(Date.now()+6*86400000);
 db.setSetting('class',{...defaultConfig,name:'班级空间',subtitle:'把日常小事，变成一起成长的故事。',introduction:'欢迎来到我们的班级空间。这里收藏每一堂课的收获，连接每一次协作，让学习与班级生活井井有条。\n\n这是用于预览的示例班级，所有姓名、作业与账目均为演示数据。',demo:true});
 db.setSetting('duties',[{id:uid(),date:today,area:'教室与公共区域',names:['周同学','吴同学']},{id:uid(),date:shanghaiDate(tomorrow),area:'教室与公共区域',names:['郑同学','王同学']}]);

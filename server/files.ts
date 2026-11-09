@@ -1,7 +1,9 @@
-import type {FastifyInstance,FastifyReply} from 'fastify';
+import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
+import {createHash} from 'node:crypto';
 import type {Store} from './db.ts';
 import type {User} from './common.ts';
-import {canManageFinance,HttpError,json,now,parse,requireUser,uid} from './common.ts';
+import {HttpError,json,now,parse,requireUser,uid} from './common.ts';
+import {can,isClassMember,type Permission} from '../shared/permissions.ts';
 import {z} from 'zod';
 import COS from 'cos-nodejs-sdk-v5';
 import JSZip from 'jszip';
@@ -29,33 +31,132 @@ const avatarTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif
 function previewable(f: any) {
   return previewTypes.has(f.mime) && types[extname(f.name).toLowerCase()] === f.mime;
 }
-const isManager=(u:User)=>u.role==='admin'||u.role==='committee';
-const financeRead=canManageFinance;
-function uploadAccess(db:Store,u:User,purpose:string,entityId?:string|null){
+const financeRead=(u:User)=>can(u,'finance.read');
+const receiptWrites=['finance.entries.create','finance.entries.edit','finance.payments.create','finance.payments.edit'] as const;
+const taskWrites=['homework.create','homework.edit','homework.publish','affairs.create','affairs.edit','affairs.publish'] as const;
+type TaskKind='homework'|'affairs';
+type ExportScope={kind:string;id?:string;permission?:Permission};
+// A request snapshot cannot authorize work after a storage await: grants,
+// account state and the business association may have changed in the meantime.
+function currentUser(db:Store,previous:User,request?:FastifyRequest):User {
+  const row=db.get('SELECT * FROM users WHERE id=?',previous.id);
+  if(!row||!row.active)throw new HttpError(401,'账号已停用，请重新登录');
+  if(row.must_change_password)throw new HttpError(403,'请先修改初始密码');
+  const token=request?.cookies?.class_session;
+  if(token&&!db.get('SELECT user_id FROM sessions WHERE token_hash=? AND user_id=? AND expires_at>?',createHash('sha256').update(token).digest('hex'),previous.id,now()))throw new HttpError(401,'登录状态已失效，请重新登录');
+  return {...previous,username:row.username,name:row.name,role:row.role,permissions:json<Permission[]>(row.permissions,[]),
+    financeManage:row.role==='committee'&&Boolean(row.finance_manage),inClass:isClassMember({role:row.role,inClass:Boolean(row.in_class)}),
+    active:true,mustChangePassword:false,version:row.version};
+}
+function sameFile(previous:any,current:any) {
+  if(['object_key','size','mime','purpose','entity_id','owner_id','scope'].some(key=>previous[key]!==current[key]))throw new HttpError(409,'文件关联已改变，请重新请求');
+}
+function readableFile(db:Store,user:User,id:string,previous?:any) {
+  const file=db.get('SELECT * FROM files WHERE id=?',id);
+  if(!file)throw new HttpError(404,'文件不存在');
+  if(!canReadFile(db,user,file))throw new HttpError(403,'无权读取此文件');
+  if(previous)sameFile(previous,file);
+  return file;
+}
+function currentExportUser(db:Store,user:User,scope:ExportScope,sources:any[]=[],request?:FastifyRequest) {
+  const current=currentUser(db,user,request);
+  if(!exportAccess(db,current,scope))throw new HttpError(403,'无权导出');
+  for(const source of sources)readableFile(db,current,source.id,source);
+  return current;
+}
+function allowed(user:User,permission:Permission){if(!can(user,permission))throw new HttpError(403,'没有执行此文件操作的权限');}
+function requireLegacy(user:User,purpose:string){
+  const permissions=purpose==='receipt'?receiptWrites:taskWrites;
+  if(!permissions.every(permission=>can(user,permission)))throw new HttpError(403,'请提供具有授权的上传业务上下文');
+}
+function scopeContext(file:any):string|undefined {return json<{context?:string}>(file.scope,{}).context;}
+function taskVisible(user:User,task:any){return task.status!=='draft'||can(user,`${task.kind as TaskKind}.drafts.read`);}
+function resourceVisible(user:User,resource:any){return resource.status==='published'||resource.status==='draft'&&can(user,'resources.drafts.read')||resource.status==='archived'&&can(user,'resources.archived.read');}
+function uploadAccess(db:Store,u:User,purpose:string,entityId?:string|null,context?:string,binding=false):string|undefined {
   if(purpose==='avatar'){
-    if(!entityId||!db.get('SELECT id FROM users WHERE id=? AND active=1',entityId))throw new HttpError(400,'头像必须关联启用的账号');
-    if(entityId!==u.id&&!isManager(u))throw new HttpError(403,'只能修改自己的头像');
+    const target=entityId&&db.get('SELECT role FROM users WHERE id=? AND active=1',entityId);
+    if(!target)throw new HttpError(400,'头像必须关联启用的账号');
+    if(entityId!==u.id){
+      allowed(u,'class.members.edit');
+      if(u.role!=='super_admin'&&['admin','super_admin'].includes(target.role))throw new HttpError(403,'只有 Admin 可维护管理员头像');
+    }
     return;
   }
-  if(purpose==='receipt'){if(!canManageFinance(u))throw new HttpError(403,'仅管理员或指定班委可上传班费凭证');return}
-  if(purpose==='submission'){const task=db.get('SELECT * FROM tasks WHERE id=?',entityId??'');if(!task||task.status!=='published'||!task.requires_submission)throw new HttpError(400,'作业或事务当前不可提交');if(!u.inClass||!db.get("SELECT 1 FROM participants WHERE task_id=? AND user_id=? AND status='required'",task.id,u.id))throw new HttpError(403,'你不在本次提交名单中');if(task.deadline&&task.deadline<now()&&!task.allow_late)throw new HttpError(400,'已超过提交截止时间');return}
-  if(!isManager(u))throw new HttpError(403,'仅管理员或班委可以上传该资料');
-  if(purpose==='task-attachment'&&entityId&&!db.get('SELECT id FROM tasks WHERE id=?',entityId))throw new HttpError(404,'作业不存在');
-  if(purpose==='resource'&&entityId&&!db.get('SELECT id FROM resources WHERE id=?',entityId))throw new HttpError(404,'资料不存在');
+  if(purpose==='receipt'){
+    if(context&&!receiptWrites.includes(context as typeof receiptWrites[number]))throw new HttpError(403,'班费凭证上下文无效');
+    if(context)allowed(u,context as Permission);else requireLegacy(u,purpose);
+    if(entityId){
+      const entry=db.get('SELECT * FROM finance_entries WHERE id=?',entityId),payment=db.get('SELECT * FROM payments WHERE id=?',entityId);
+      const target=entry??payment;
+      if(target){
+        const expected=entry?'finance.entries.edit':'finance.payments.edit';
+        if(context&&context!==expected)throw new HttpError(403,'凭证操作与记录不匹配');
+        allowed(u,expected);
+        if(target.voided||entry?.payment_id)throw new HttpError(409,'该记录当前不能修改凭证');
+      }else if(!binding||context?.endsWith('.edit'))throw new HttpError(404,'班费记录不存在');
+    }else if(context?.endsWith('.edit'))throw new HttpError(400,'修订凭证需要关联班费记录');
+    return context;
+  }
+  if(purpose==='submission'){const task=db.get('SELECT * FROM tasks WHERE id=?',entityId??'');if(!task||task.status!=='published'||!task.requires_submission)throw new HttpError(400,'作业或事务当前不可提交');if(!isClassMember(u)||!db.get("SELECT 1 FROM participants WHERE task_id=? AND user_id=? AND status='required'",task.id,u.id))throw new HttpError(403,'你不在本次提交名单中');if(task.deadline&&task.deadline<now()&&!task.allow_late)throw new HttpError(400,'已超过提交截止时间');return}
+  if(purpose==='task-attachment'){
+    if(context&&context!=='homework'&&context!=='affairs')throw new HttpError(403,'任务附件上下文无效');
+    const task=entityId&&db.get('SELECT * FROM tasks WHERE id=?',entityId);
+    if(entityId&&!task)throw new HttpError(404,'任务不存在');
+    if(task){
+      if(context&&context!==task.kind)throw new HttpError(403,'任务附件类型不匹配');
+      allowed(u,`${task.kind as TaskKind}.edit`);
+      if(task.status==='published')allowed(u,`${task.kind as TaskKind}.publish`);
+      return task.kind;
+    }
+    if(context)allowed(u,`${context as TaskKind}.create`);else requireLegacy(u,purpose);
+    return context;
+  }
+  if(purpose==='resource'){
+    const resource=entityId&&db.get('SELECT * FROM resources WHERE id=?',entityId);
+    if(entityId&&!resource)throw new HttpError(404,'资料不存在');
+    allowed(u,resource?'resources.edit':'resources.create');
+    if(resource&&!resourceVisible(u,resource))throw new HttpError(403,'无权读取此资料');
+    if(resource?.status==='published')allowed(u,'resources.publish');
+    return;
+  }
+  if(purpose==='class-photo'){allowed(u,'class.settings.edit');return;}
+  throw new HttpError(403,'不支持此文件用途');
 }
 function hasId(raw:unknown,id:string){return json<string[]>(raw,[]).includes(id)}
+function currentAttachment(db:Store,f:any):boolean {
+  if(!f.entity_id)return false;
+  if(f.purpose==='task-attachment')return hasId(db.get('SELECT attachments FROM tasks WHERE id=?',f.entity_id)?.attachments,f.id);
+  if(f.purpose==='resource')return hasId(db.get('SELECT attachments FROM resources WHERE id=?',f.entity_id)?.attachments,f.id);
+  if(f.purpose==='receipt')return hasId(db.get('SELECT receipt_ids FROM finance_entries WHERE id=? OR payment_id=?',f.entity_id,f.entity_id)?.receipt_ids,f.id);
+  if(f.purpose==='submission')return db.all('SELECT attachments FROM submissions WHERE task_id=? AND user_id=?',f.entity_id,f.owner_id).some(row=>hasId(row.attachments,f.id));
+  if(f.purpose==='avatar')return json<any>(db.get('SELECT profile FROM users WHERE id=?',f.entity_id)?.profile,{}).avatarFileId===f.id;
+  return f.purpose==='class-photo'&&db.setting<any>('class',{}).photoFileId===f.id;
+}
+function stagedRead(db:Store,user:User,file:any):boolean {
+  if(file.owner_id!==user.id||file.entity_id&&!file.expires_at)return false;
+  try{uploadAccess(db,user,file.purpose,file.entity_id,scopeContext(file));return true;}catch{return false;}
+}
+function exportAccess(db:Store,user:User,scope:ExportScope):boolean {
+  if(scope.kind==='finance')return (!scope.permission||scope.permission==='finance.export')&&can(user,'finance.export');
+  if(scope.kind!=='task'||!scope.id)return false;
+  const task=db.get('SELECT kind,status FROM tasks WHERE id=?',scope.id);
+  if(!task||!taskVisible(user,task))return false;
+  const spreadsheet=`${task.kind as TaskKind}.export` as const,bundle=`${task.kind as TaskKind}.exportFiles` as const;
+  return scope.permission?(scope.permission===spreadsheet||scope.permission===bundle)&&can(user,scope.permission):can(user,spreadsheet)&&can(user,bundle);
+}
 export function canReadFile(db:Store,u:User|null,f:any):boolean {
   if(f.status!=='ready'||(f.expires_at&&f.expires_at<now()))return false;
   const config=db.setting<any>('class',{});
   if(f.purpose==='class-photo'&&config.photoFileId===f.id)return true;
   if(!u||u.mustChangePassword)return false;
-  if(f.purpose==='export'){const s=json<any>(f.scope,{});return f.owner_id===u.id&&(s.kind==='finance'?financeRead(u):isManager(u))}
+  if(f.purpose==='export')return f.owner_id===u.id&&exportAccess(db,u,json<ExportScope>(f.scope,{kind:''}));
   if(f.purpose==='receipt'){
     const entry = db.get('SELECT * FROM finance_entries WHERE id=? OR payment_id=?', f.entity_id, f.entity_id);
     const auditor = financeRead(u);
-    if (!entry) return !f.entity_id && f.owner_id === u.id && auditor;
+    if (!entry) return stagedRead(db,u,f);
     if (hasId(entry.receipt_ids, f.id)) return auditor || (!entry.voided && !!entry.public_receipt);
-    if (!auditor) return false;
+    if(stagedRead(db,u,f))return true;
+    if (!can(u,'finance.history')) return false;
     const entityType = f.entity_id === entry.id ? 'entry' : 'payment';
     return db.all<{ data: string }>('SELECT data FROM finance_versions WHERE entity_type=? AND entity_id=?', entityType, f.entity_id)
       .some(row => {
@@ -66,27 +167,77 @@ export function canReadFile(db:Store,u:User|null,f:any):boolean {
         return Array.isArray(ids) && ids.includes(f.id);
       });
   }
-  if(f.purpose==='submission'){return f.owner_id===u.id||isManager(u)&&db.all('SELECT attachments FROM submissions WHERE task_id=?',f.entity_id).some(r=>hasId(r.attachments,f.id))}
-  if(f.purpose==='resource'){const r=db.get('SELECT * FROM resources WHERE id=?',f.entity_id);if(!r)return !f.entity_id&&f.owner_id===u.id&&isManager(u);return (isManager(u)||r.status==='published'&&hasId(r.attachments,f.id))}
-  if(f.purpose==='task-attachment'){const t=db.get('SELECT * FROM tasks WHERE id=?',f.entity_id);if(!t)return !f.entity_id&&f.owner_id===u.id&&isManager(u);return isManager(u)||['published','archived'].includes(t.status)&&hasId(t.attachments,f.id)}
+  if(f.purpose==='submission'){
+    if(currentAttachment(db,f)){
+      if(f.owner_id===u.id)return true;
+      const task=db.get('SELECT kind,status FROM tasks WHERE id=?',f.entity_id);
+      return !!task&&taskVisible(u,task)&&can(u,`${task.kind as TaskKind}.submissions.read`);
+    }
+    return stagedRead(db,u,f);
+  }
+  if(f.purpose==='resource'){
+    const resource=db.get('SELECT * FROM resources WHERE id=?',f.entity_id);
+    if(!resource)return stagedRead(db,u,f);
+    if(hasId(resource.attachments,f.id))return resourceVisible(u,resource);
+    if(stagedRead(db,u,f))return true;
+    return resourceVisible(u,resource)&&can(u,'resources.history.read')&&db.all('SELECT data FROM resource_versions WHERE resource_id=?',f.entity_id).some(row=>{
+      const snapshot=json<{status?:string;attachments?:string[]}>(row.data,{});
+      return resourceVisible(u,snapshot)&&snapshot.attachments?.includes(f.id);
+    });
+  }
+  if(f.purpose==='task-attachment'){
+    const task=db.get('SELECT * FROM tasks WHERE id=?',f.entity_id);
+    if(task&&hasId(task.attachments,f.id))return taskVisible(u,task);
+    return stagedRead(db,u,f);
+  }
   if(f.purpose==='avatar'){
     const member=db.get('SELECT profile FROM users WHERE id=? AND active=1',f.entity_id);
     if(!member)return false;
     if(json<any>(member.profile,{}).avatarFileId===f.id)return true;
-    return f.owner_id===u.id&&!!f.expires_at&&(f.entity_id===u.id||isManager(u));
+    return stagedRead(db,u,f);
   }
-  return !f.entity_id&&f.owner_id===u.id&&isManager(u);
+  return f.purpose==='class-photo'&&stagedRead(db,u,f);
 }
 function metadata(f: any, includeOwnership = true) {
   return { id: f.id, name: f.name, size: f.size, mime: f.mime, status: f.status, purpose: f.purpose,
     ...(includeOwnership && { entityId: f.entity_id, ownerId: f.owner_id }), createdAt: f.created_at };
 }
 function neededStorage(db:Store){const s=stores.get(db);if(!s?.configured)throw new HttpError(503,'尚未配置腾讯云 COS，请管理员完成存储配置后再上传或导出');return s;}
-export function validateAttachments(db:Store,user:User,ids:string[],purpose:string,entityId?:string){
+export function validateAttachments(db:Store,user:User,ids:string[],purpose:string,entityId?:string,context?:string){
   if(ids.length>5||new Set(ids).size!==ids.length)throw new HttpError(400,'每次最多5个不同附件');
-  for(const id of ids){const f=db.get('SELECT * FROM files WHERE id=?',id);if(!f||f.status!=='ready'||f.purpose!==purpose||(f.expires_at&&f.expires_at<now()))throw new HttpError(400,'附件尚未完成上传或用途不匹配');if(f.entity_id&&f.entity_id!==entityId)throw new HttpError(403,'附件属于其他记录');if(f.owner_id!==user.id&&!(isManager(user)&&f.entity_id===entityId&&purpose!=='submission'))throw new HttpError(403,'不能使用其他人的附件');uploadAccess(db,user,purpose,entityId)}
+  if(!ids.length)return;
+  user=currentUser(db,user);
+  for(const id of ids){
+    const f=db.get('SELECT * FROM files WHERE id=?',id);
+    if(!f||f.status!=='ready'||f.purpose!==purpose||(f.expires_at&&f.expires_at<now()))throw new HttpError(400,'附件尚未完成上传或用途不匹配');
+    if(f.entity_id&&f.entity_id!==entityId)throw new HttpError(403,'附件属于其他记录');
+    const retained=f.entity_id===entityId&&currentAttachment(db,f);
+    if(f.owner_id!==user.id&&!(retained&&purpose!=='submission'&&purpose!=='avatar'))throw new HttpError(403,'不能使用其他人的附件');
+    const targetContext=uploadAccess(db,user,purpose,entityId,context,true);
+    if(!retained&&(purpose==='receipt'||purpose==='task-attachment')){
+      const storedContext=scopeContext(f);
+      if(storedContext){
+        if(storedContext!==targetContext)throw new HttpError(403,'附件上传上下文与当前操作不匹配');
+        // Recheck the staging capability as well as the target operation.
+        if(purpose==='receipt')allowed(user,storedContext as Permission);
+      }else requireLegacy(user,purpose);
+    }
+  }
 }
-export function bindAttachments(db:Store,ids:string[],entityId:string){for(const id of ids)db.run('UPDATE files SET entity_id=?,expires_at=NULL WHERE id=?',entityId,id);}
+// Callers validate in the same synchronous transaction before storing the association.
+export function bindAttachments(db:Store,ids:string[],entityId:string){
+  for(const id of ids){
+    const file=db.get('SELECT * FROM files WHERE id=?',id);
+    if(!file||file.entity_id&&file.entity_id!==entityId)throw new HttpError(403,'附件不能绑定到其他记录');
+    const context=scopeContext(file);
+    if(file.purpose==='task-attachment'&&context&&db.get('SELECT kind FROM tasks WHERE id=?',entityId)?.kind!==context)throw new HttpError(403,'附件业务类型不匹配');
+    if(file.purpose==='receipt'&&context){
+      const kind=db.get('SELECT id FROM payments WHERE id=?',entityId)?'payments':'entries';
+      if(!context.startsWith(`finance.${kind}.`))throw new HttpError(403,'凭证业务类型不匹配');
+    }
+    db.run('UPDATE files SET entity_id=?,expires_at=NULL WHERE id=?',entityId,id);
+  }
+}
 
 // Bind the replacement and retire the old object in the caller's database transaction.
 // Storage deletion is deferred to the existing cleanup command.
@@ -125,31 +276,83 @@ function sendPreview(reply: FastifyReply, f: any, bytes: Buffer) {
 export function registerFiles(app:FastifyInstance,db:Store,storage:StorageAdapter=new CosStorage()){
   stores.set(db,storage);
   app.get('/api/status',async req=>{requireUser(req);return {cosConfigured:storage.configured}});
-  app.post('/api/files/upload',async req=>{const u=requireUser(req),v=parse(z.object({name:z.string().trim().min(1).max(180).refine(s=>!/[\\/\x00-\x1f]/.test(s),'文件名无效'),size:z.number().int().positive().max(20*1024*1024),mime:z.string().max(200).default(''),purpose:z.enum(['task-attachment','submission','resource','receipt','avatar','class-photo']),entityId:z.string().optional()}),req.body);uploadAccess(db,u,v.purpose,v.entityId);const ext=extname(v.name).toLowerCase(),mime=types[ext];if(!mime)throw new HttpError(400,'不支持此文件类型');if(v.purpose==='avatar'&&(v.size>maxAvatarSize||!avatarTypes.has(mime)))throw new HttpError(400,'头像仅支持不超过 5 MiB 的 JPG、PNG、WebP 或 GIF 图片');const s=neededStorage(db);if(['avatar','class-photo'].includes(v.purpose)&&!mime.startsWith('image/'))throw new HttpError(400,'请选择图片');const id=uid(),key=`classroom/${v.purpose}/${uid()}${ext}`,signed=await s.uploadUrl(key,mime,v.size);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',id,v.name,v.size,mime,key,v.purpose,v.entityId??null,u.id,'pending',now(),new Date(Date.now()+86400000+600000).toISOString());return{fileId:id,...signed}});
-  app.post<{Params:{id:string}}>('/api/files/:id/confirm',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f||f.owner_id!==u.id)throw new HttpError(404,'上传记录不存在');uploadAccess(db,u,f.purpose,f.entity_id);if(f.status==='ready')return metadata(f);if(f.status!=='pending'||f.expires_at<now())throw new HttpError(400,'上传记录已过期');const s=neededStorage(db),head=await s.head(f.object_key);if(head.size!==f.size||head.mime!==f.mime)throw new HttpError(400,'实际文件大小或类型与声明不符');if(!sniff(f,await s.readHead(f.object_key)))throw new HttpError(400,'文件内容与类型不符');uploadAccess(db,u,f.purpose,f.entity_id);const result=db.run("UPDATE files SET status='ready' WHERE id=? AND status='pending'",f.id);if(!result.changes)throw new HttpError(409,'文件状态已改变，请重新上传');return metadata({...f,status:'ready'})});
-  app.get<{Params:{id:string}}>('/api/files/:id',async req=>{const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);if(!f)throw new HttpError(404,'文件不存在');if(!canReadFile(db,u,f))throw new HttpError(403,'无权读取此文件');return metadata(f,f.purpose!=='receipt'||financeRead(u))});
+  app.post('/api/files/upload',async req=>{
+    const u=currentUser(db,requireUser(req),req),v=parse(z.object({name:z.string().trim().min(1).max(180).refine(s=>!/[\\/\x00-\x1f]/.test(s),'文件名无效'),size:z.number().int().positive().max(20*1024*1024),mime:z.string().max(200).default(''),purpose:z.enum(['task-attachment','submission','resource','receipt','avatar','class-photo']),entityId:z.string().optional(),context:z.string().max(100).optional()}),req.body);
+    const context=uploadAccess(db,u,v.purpose,v.entityId,v.context),ext=extname(v.name).toLowerCase(),mime=types[ext];
+    if(!mime)throw new HttpError(400,'不支持此文件类型');
+    if(v.purpose==='avatar'&&(v.size>maxAvatarSize||!avatarTypes.has(mime)))throw new HttpError(400,'头像仅支持不超过 5 MiB 的 JPG、PNG、WebP 或 GIF 图片');
+    const s=neededStorage(db);
+    if(['avatar','class-photo'].includes(v.purpose)&&!mime.startsWith('image/'))throw new HttpError(400,'请选择图片');
+    const id=uid(),key=`classroom/${v.purpose}/${uid()}${ext}`,signed=await s.uploadUrl(key,mime,v.size);
+    return db.transaction(()=>{
+      const current=currentUser(db,u,req);
+      uploadAccess(db,current,v.purpose,v.entityId,context);
+      db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,v.name,v.size,mime,key,v.purpose,v.entityId??null,u.id,'pending',context?JSON.stringify({context}):null,now(),new Date(Date.now()+86400000+600000).toISOString());
+      return{fileId:id,...signed};
+    });
+  });
+  app.post<{Params:{id:string}}>('/api/files/:id/confirm',async req=>{
+    const u=currentUser(db,requireUser(req),req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
+    if(!f||f.owner_id!==u.id)throw new HttpError(404,'上传记录不存在');
+    uploadAccess(db,u,f.purpose,f.entity_id,scopeContext(f));
+    if(f.expires_at&&f.expires_at<now())throw new HttpError(400,'上传记录已过期');
+    if(f.status==='ready')return metadata(f);
+    if(f.status!=='pending')throw new HttpError(400,'上传记录已过期');
+    const s=neededStorage(db),head=await s.head(f.object_key);
+    if(head.size!==f.size||head.mime!==f.mime)throw new HttpError(400,'实际文件大小或类型与声明不符');
+    if(!sniff(f,await s.readHead(f.object_key)))throw new HttpError(400,'文件内容与类型不符');
+    return db.transaction(()=>{
+      const current=currentUser(db,u,req),file=db.get('SELECT * FROM files WHERE id=?',f.id);
+      if(!file||file.owner_id!==current.id)throw new HttpError(404,'上传记录不存在');
+      sameFile(f,file);
+      if(file.status!=='pending')throw new HttpError(409,'文件状态已改变，请重新上传');
+      if(file.expires_at&&file.expires_at<now())throw new HttpError(400,'上传记录已过期');
+      uploadAccess(db,current,file.purpose,file.entity_id,scopeContext(file));
+      db.run("UPDATE files SET status='ready' WHERE id=? AND status='pending'",file.id);
+      return metadata({...file,status:'ready'});
+    });
+  });
+  app.get<{Params:{id:string}}>('/api/files/:id',async req=>{const u=currentUser(db,requireUser(req),req),f=readableFile(db,u,req.params.id);return metadata(f,f.purpose!=='receipt'||financeRead(u))});
   app.post<{Params:{id:string}}>('/api/files/:id/download',async req=>{
-    const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
-    if(!f)throw new HttpError(404,'文件不存在');
-    if(!canReadFile(db,u,f))throw new HttpError(403,'无权下载此文件');
+    const u=currentUser(db,requireUser(req),req),f=readableFile(db,u,req.params.id);
     const s=neededStorage(db),v=parse(z.object({preview:z.boolean().optional()}),req.body??{});
     const previewAvailable=previewable(f)&&f.size>0&&f.size<=maxPreviewSize&&!!s.read;
-    return {url:v.preview&&previewAvailable?`/api/files/${encodeURIComponent(f.id)}/preview`:await s.downloadUrl(f.object_key,f.name),previewAvailable};
+    const url=v.preview&&previewAvailable?`/api/files/${encodeURIComponent(f.id)}/preview`:await s.downloadUrl(f.object_key,f.name);
+    readableFile(db,currentUser(db,u,req),f.id,f);
+    return {url,previewAvailable};
   });
   app.get<{Params:{id:string}}>('/api/files/:id/preview',async(req,reply)=>{
-    const u=requireUser(req),f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
-    if(!f)throw new HttpError(404,'文件不存在');
-    if(!canReadFile(db,u,f))throw new HttpError(403,'无权预览此文件');
-    return sendPreview(reply,f,await previewContent(db,f));
+    const u=currentUser(db,requireUser(req),req),f=readableFile(db,u,req.params.id);
+    const bytes=await previewContent(db,f);
+    const current=readableFile(db,currentUser(db,u,req),f.id,f);
+    return sendPreview(reply,current,bytes);
   });
   app.get<{Params:{id:string}}>('/api/public/photo/:id',async(req,reply)=>{
     const f=db.get('SELECT * FROM files WHERE id=?',req.params.id);
     if(!f||f.purpose!=='class-photo'||!canReadFile(db,null,f)||!f.mime.startsWith('image/'))throw new HttpError(404,'图片不存在');
-    return sendPreview(reply,f,await previewContent(db,f));
+    const bytes=await previewContent(db,f),current=db.get('SELECT * FROM files WHERE id=?',f.id);
+    if(!current||current.purpose!=='class-photo'||!canReadFile(db,null,current)||!current.mime.startsWith('image/'))throw new HttpError(404,'图片不存在');
+    sameFile(f,current);
+    return sendPreview(reply,current,bytes);
   });
 }
-export async function createExport(db:Store,user:User,filename:string,buffer:Buffer,mime:string,scope:{kind:string,id?:string}):Promise<{fileId:string}>{
-  const s=neededStorage(db);if(scope.kind==='finance'?!financeRead(user):!isManager(user))throw new HttpError(403,'无权导出');const id=uid(),key=`classroom/exports/${uid()}${extname(filename)}`;await s.put(key,buffer,mime);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,filename,buffer.length,mime,key,'export',scope.id??null,user.id,'ready',JSON.stringify(scope),now(),new Date(Date.now()+86400000).toISOString());return{fileId:id};
+export async function createExport(db:Store,user:User,filename:string,buffer:Buffer,mime:string,scope:ExportScope,sources:any[]=[],request?:FastifyRequest):Promise<{fileId:string}>{
+  const s=neededStorage(db);currentExportUser(db,user,scope,sources,request);
+  const id=uid(),key=`classroom/exports/${uid()}${extname(filename)}`;
+  await s.put(key,buffer,mime);
+  try {
+    return db.transaction(()=>{
+      currentExportUser(db,user,scope,sources,request);
+      db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,filename,buffer.length,mime,key,'export',scope.id??null,user.id,'ready',JSON.stringify(scope),now(),new Date(Date.now()+86400000).toISOString());
+      return{fileId:id};
+    });
+  } catch(error) {
+    try {await s.remove(key);} catch {
+      // Keep failed cleanup discoverable without making the object readable.
+      db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,filename,buffer.length,mime,key,'export',scope.id??null,user.id,'cleaning',JSON.stringify(scope),now(),new Date(Date.now()-1).toISOString());
+    }
+    throw error;
+  }
 }
 export async function cleanupFiles(db:Store,storage:StorageAdapter=new CosStorage()){
   if(!storage.configured)throw new HttpError(503,'COS 未配置');let count=0;
@@ -160,10 +363,9 @@ function zipComponent(value: string) {
   const cleaned = value.replace(/[\\/:*?"<>|\p{Cc}]/gu, '_').replace(/[. ]+$/g, '');
   return cleaned || '附件';
 }
-export async function createBundle(db:Store,user:User,ids:string[],name:string,scope:{kind:string,id?:string}){
-  const s=neededStorage(db);if(!isManager(user))throw new HttpError(403,'无权导出');const rows=[...new Set(ids)].map(id=>db.get('SELECT * FROM files WHERE id=?',id));
-  if(rows.some(f=>!f||!canReadFile(db,user,f)))throw new HttpError(403,'存在不可访问的文件');
+export async function createBundle(db:Store,user:User,ids:string[],name:string,scope:ExportScope,request?:FastifyRequest){
+  const s=neededStorage(db),current=currentExportUser(db,user,scope,[],request),rows=[...new Set(ids)].map(id=>readableFile(db,current,id));
   if(rows.reduce((sum,f)=>sum+f.size,0)>100*1024*1024)throw new HttpError(400,'本次附件超过100MiB，请按学生分批下载');
-  const zip=new JSZip();for(const [i,f] of rows.entries()){let bytes:Buffer;if(s.read)bytes=await s.read(f.object_key);else{const res=await fetch(await s.downloadUrl(f.object_key,f.name));if(!res.ok)throw new HttpError(502,'文件读取失败');bytes=Buffer.from(await res.arrayBuffer())}if(bytes.length!==f.size)throw new HttpError(502,'文件大小发生变化');const owner=db.get('SELECT name FROM users WHERE id=?',f.owner_id)?.name??'附件';zip.file(`${zipComponent(owner)}/${i+1}-${zipComponent(f.name)}`,bytes)}
-  return createExport(db,user,`${zipComponent(name)}.zip`,await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'}),'application/zip',scope);
+  const zip=new JSZip();for(const [i,f] of rows.entries()){let bytes:Buffer;if(s.read)bytes=await s.read(f.object_key);else{const res=await fetch(await s.downloadUrl(f.object_key,f.name));if(!res.ok)throw new HttpError(502,'文件读取失败');bytes=Buffer.from(await res.arrayBuffer())}currentExportUser(db,user,scope,rows,request);if(bytes.length!==f.size)throw new HttpError(502,'文件大小发生变化');const owner=db.get('SELECT name FROM users WHERE id=?',f.owner_id)?.name??'附件';zip.file(`${zipComponent(owner)}/${i+1}-${zipComponent(f.name)}`,bytes)}
+  return createExport(db,user,`${zipComponent(name)}.zip`,await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'}),'application/zip',scope,rows,request);
 }

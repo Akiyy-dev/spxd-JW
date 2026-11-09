@@ -19,7 +19,7 @@ async function fixture(t: TestContext, storage?: StorageAdapter) {
     assert.equal(response.statusCode, 200, response.body);
     return {[response.cookies[0].name]:response.cookies[0].value};
   }
-  const admin = createUser(db,{username:'admin',name:'管理员',role:'admin',password,mustChangePassword:false});
+  const admin = createUser(db,{username:'admin',name:'Admin',role:'super_admin',password,mustChangePassword:false});
   const cookies = await login('admin');
   async function edit(user: typeof admin, changes: object) {
     const response = await app.inject({method:'PUT',url:'/api/users/'+user.id,cookies,

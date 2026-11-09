@@ -1,70 +1,92 @@
 import { useState } from 'react'
-import { Archive, ExternalLink, FileText, History, KeyRound, Pencil, Plus, Search, ShieldCheck, Trash2, UserRoundPlus } from 'lucide-react'
+import { Archive, ExternalLink, FileText, History, Pencil, Plus, Search, Send, Trash2 } from 'lucide-react'
 import { api, dateCN, dateLabel, timestamp, useQuery } from './api'
 import { createId } from './id'
 import { Avatar } from './avatar'
-import { roleNames, type ClassData, type Duty, type Member, type Resource, type Role, type User } from './types'
+import { roleNames, type ClassData, type Duty, type Member, type Resource, type User } from './types'
 import { AsyncForm, Badge, checked, Empty, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
+import {can} from '../shared/permissions'
 
 const lines = (input: string) => input.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
 const external = (url: string) => /^https?:\/\//i.test(url)
 
-export function Resources({manager}: {manager: boolean}) {
+export function Resources({user}: {user: User}) {
   const list = useQuery<Resource[]>('/resources')
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('')
   const [from, setFrom] = useState('')
-  const [archived, setArchived] = useState(false)
+  const [status, setStatus] = useState<Resource['status']>('published')
   const [editor, setEditor] = useState<Resource | 'new'>()
   const [history, setHistory] = useState<Resource>()
+  const [transition, setTransition] = useState<{item:Resource;status:'published'|'archived'}>()
   const [notice, setNotice] = useState('')
-  const categories = [...new Set(list.data?.map(item => item.category) || [])].sort()
-  const items = list.data?.filter(item => (archived ? item.status === 'archived' : item.status === 'published')
+  const visibleStatus=status==='draft'&&!can(user,'resources.drafts.read')||status==='archived'&&!can(user,'resources.archived.read')?'published':status
+  const categories = [...new Set(list.data?.filter(item=>canReadResource(user,item)).map(item => item.category) || [])].sort()
+  const items = list.data?.filter(item => canReadResource(user,item)&&item.status===visibleStatus
     && (!category || item.category === category) && (!from || dateCN(new Date(item.updatedAt)) >= from)
     && `${item.title} ${item.description} ${item.category}`.toLowerCase().includes(search.trim().toLowerCase()))
   const close = () => setEditor(undefined)
   return <div className="stack">
-    <PageTitle label="学习资料" title="资料中心" detail="查找班级文档、学习资料和常用链接。" actions={manager && <button className="btn primary" onClick={() => setEditor('new')}><Plus size={18}/>添加资料</button>} />
+    <PageTitle label="学习资料" title="资料中心" detail="查找班级文档、学习资料和常用链接。" actions={can(user,'resources.create') && <button className="btn primary" onClick={() => setEditor('new')}><Plus size={18}/>添加资料</button>} />
     <section className="panel">
       <div className="toolbar filter-bar">
         <label className="search-field"><Search size={18}/><input type="search" aria-label="搜索资料" placeholder="搜索资料…" value={search} onChange={event => setSearch(event.target.value)}/></label>
         <select aria-label="按类别筛选" value={category} onChange={event => setCategory(event.target.value)}><option value="">全部类别</option>{categories.map(item => <option key={item}>{item}</option>)}</select>
         <label className="inline-label">更新起始日<input type="date" value={from} onChange={event => setFrom(event.target.value)}/></label>
-        {manager && <label className="check"><input type="checkbox" checked={archived} onChange={event => setArchived(event.target.checked)}/>仅归档</label>}
+        {(can(user,'resources.drafts.read')||can(user,'resources.archived.read'))&&<select aria-label="资料状态" value={visibleStatus} onChange={event=>setStatus(event.target.value as Resource['status'])}><option value="published">已发布</option>{can(user,'resources.drafts.read')&&<option value="draft">草稿</option>}{can(user,'resources.archived.read')&&<option value="archived">已归档</option>}</select>}
       </div>
       <Feedback {...list} retry={list.reload}/>
       {notice && <p role="status" className="feedback">{notice}</p>}
-      {items && (items.length ? <div className="resource-grid">{items.map(item => <article className="resource-card" key={item.id}>
-        <div className="split"><span className="row-icon sky"><FileText size={20}/></span><div className="badge-group"><Badge>{item.category}</Badge>{item.pinned && <Badge tone="good">置顶</Badge>}{item.status === 'archived' && <Badge>已归档</Badge>}</div></div>
-        <h3>{item.title}</h3><p className="muted">{timestamp(item.updatedAt)}{item.authorName && ' · ' + item.authorName}</p>
-        {item.description && <p className="prose">{item.description}</p>}
-        <FileList ids={item.attachments}/>
-        <div className="actions">
-          {external(item.url) && <a className="btn" href={item.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={16}/>打开外部链接</a>}
-          {manager && <><button className="btn quiet" onClick={() => setEditor(item)}><Pencil size={16}/>编辑</button><button className="btn quiet" onClick={() => setHistory(item)}><History size={16}/>历史版本</button></>}
-        </div>
-      </article>)}</div> : <Empty>{search || category || from ? '没有符合筛选条件的资料。' : archived ? '暂无归档资料。' : '暂无已发布的资料。'}</Empty>)}
+      {items && (items.length ? <div className="resource-grid">{items.map(item => <ResourceCard key={item.id} user={user} item={item} edit={()=>setEditor(item)} history={()=>setHistory(item)} changeStatus={next=>setTransition({item,status:next})}/>)}</div> : <Empty>{search || category || from ? '没有符合筛选条件的资料。' : visibleStatus==='archived' ? '暂无归档资料。' : visibleStatus==='draft'?'暂无草稿资料。':'暂无已发布的资料。'}</Empty>)}
     </section>
-    {editor && <ResourceEditor item={editor === 'new' ? undefined : editor} close={close} saved={() => {close(); list.reload(); setNotice('资料已保存。')}}/>}
-    {history && <ResourceHistory item={history} close={() => setHistory(undefined)}/>}
+    {editor && (editor==='new'?can(user,'resources.create'):canEditResource(user,editor)) && <ResourceEditor user={user} item={editor === 'new' ? undefined : editor} close={close} saved={next=> {close(); list.reload();setStatus(next);setNotice(next==='draft'&&!can(user,'resources.drafts.read')?'草稿已保存，可由获授权的成员查看和发布。':'资料已保存。')}}/>}
+    {history && can(user,'resources.history.read') && canReadResource(user,history) && <ResourceHistory item={history} close={() => setHistory(undefined)}/>}
+    {transition && canReadResource(user,transition.item) && can(user,transition.status==='published'?'resources.publish':'resources.archive') && <ResourceStatus item={transition.item} status={transition.status} close={()=>setTransition(undefined)} saved={()=>{setTransition(undefined);list.reload();setNotice(transition.status==='published'?'资料已发布。':'资料已归档。')}}/>}
   </div>
 }
 
-function ResourceEditor({item, close, saved}: {item?: Resource; close: () => void; saved: () => void}) {
+function canReadResource(user:User,item:Resource) {return item.status==='published'||can(user,item.status==='draft'?'resources.drafts.read':'resources.archived.read')}
+function canEditResource(user:User,item:Resource) {return canReadResource(user,item)&&can(user,'resources.edit')&&(item.status!=='published'||can(user,'resources.publish'))}
+
+export function ResourceCard({user,item,edit,history,changeStatus}:{user:User;item:Resource;edit:()=>void;history:()=>void;changeStatus:(status:'published'|'archived')=>void}) {
+  if(!canReadResource(user,item))return null
+  return <article className="resource-card">
+    <div className="split"><span className="row-icon sky"><FileText size={20}/></span><div className="badge-group"><Badge>{item.category}</Badge>{item.pinned&&<Badge tone="good">置顶</Badge>}{item.status==='draft'&&<Badge tone="warn">草稿</Badge>}{item.status==='archived'&&<Badge>已归档</Badge>}</div></div>
+    <h3>{item.title}</h3><p className="muted">{timestamp(item.updatedAt)}{item.authorName&&' · '+item.authorName}</p>
+    {item.description&&<p className="prose">{item.description}</p>}<FileList ids={item.attachments}/>
+    <div className="actions">
+      {external(item.url)&&<a className="btn" href={item.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={16}/>打开外部链接</a>}
+      {canEditResource(user,item)&&<button className="btn quiet" onClick={edit}><Pencil size={16}/>编辑</button>}
+      {item.status!=='published'&&can(user,'resources.publish')&&<button className="btn quiet" onClick={()=>changeStatus('published')}><Send size={16}/>{item.status==='archived'?'恢复发布':'发布'}</button>}
+      {item.status!=='archived'&&can(user,'resources.archive')&&<button className="btn quiet" onClick={()=>changeStatus('archived')}><Archive size={16}/>归档</button>}
+      {can(user,'resources.history.read')&&<button className="btn quiet" onClick={history}><History size={16}/>历史版本</button>}
+    </div>
+  </article>
+}
+
+function ResourceStatus({item,status,close,saved}:{item:Resource;status:'published'|'archived';close:()=>void;saved:()=>void}) {
+  const label=status==='published'?(item.status==='archived'?'恢复发布':'发布'):'归档'
+  return <Modal title={`${label}资料`} close={close}><AsyncForm cancel={close} button={label} submit={async()=>{
+    await api('/resources/'+item.id,'PUT',{version:item.version,changes:{status}});saved()
+  }}><p>确认{label}「{item.title}」？{status==='published'?'发布后班级成员可以查看。':'归档后将从已发布列表中移除。'}</p></AsyncForm></Modal>
+}
+
+function ResourceEditor({user,item, close, saved}: {user:User;item?: Resource; close: () => void; saved: (status:Resource['status']) => void}) {
   const [attachments, setAttachments] = useState(item?.attachments || [])
   return <Modal title={item ? '编辑资料' : '添加资料'} close={close}>
     <AsyncForm cancel={close} submit={async data => {
       const url = val(data, 'url')
       if (url && !external(url)) throw new Error('请输入以 https:// 或 http:// 开头的链接。')
-      const changes = {title: val(data, 'title'), category: val(data, 'category'), url, description: val(data, 'description'), pinned: checked(data, 'pinned'), status: val(data, 'status'), attachments}
+      const status=item?.status??(can(user,'resources.publish')&&val(data,'status')==='published'?'published':'draft')
+      const changes = {title: val(data, 'title'), category: val(data, 'category'), url, description: val(data, 'description'), pinned: checked(data, 'pinned'), attachments}
       if (item) await api('/resources/' + item.id, 'PUT', {changes, version: item.version})
-      else await api('/resources', 'POST', changes)
-      saved()
+      else await api('/resources', 'POST', {...changes,status})
+      saved(status)
     }}>
       <div className="form-grid">
         <Field label="资料标题" wide><input name="title" required maxLength={150} defaultValue={item?.title}/></Field>
         <Field label="类别"><input name="category" required maxLength={50} defaultValue={item?.category || '学习资料'}/></Field>
-        <Field label="发布状态"><select name="status" defaultValue={item?.status || 'published'}><option value="published">已发布</option><option value="archived">归档（下架）</option></select></Field>
+        {!item&&can(user,'resources.publish')?<Field label="保存方式"><select name="status" defaultValue="draft"><option value="draft">保存草稿</option><option value="published">立即发布</option></select></Field>:<p className="muted">{item?`当前状态：${item.status==='published'?'已发布':item.status==='draft'?'草稿':'已归档'}`:'资料将保存为草稿。'}</p>}
         <Field label="资料说明" wide><textarea name="description" rows={4} maxLength={5000} defaultValue={item?.description}/></Field>
         <Field label="外部链接" wide><input type="url" name="url" maxLength={2000} defaultValue={item?.url}/></Field>
         <label className="check wide"><input name="pinned" type="checkbox" defaultChecked={item?.pinned}/>在资料列表置顶</label>
@@ -89,7 +111,7 @@ function ResourceHistory({item, close}: {item: Resource; close: () => void}) {
 }
 
 
-export function ClassPage({manager, changed}: {manager: boolean; changed: () => void}) {
+export function ClassPage({user, changed}: {user:User; changed: () => void}) {
   const info = useQuery<ClassData>('/class')
   const [editor, setEditor] = useState<'settings' | 'duties' | Member>()
   const [notice, setNotice] = useState('')
@@ -98,7 +120,7 @@ export function ClassPage({manager, changed}: {manager: boolean; changed: () => 
   const saved = () => {close(); info.reload(); changed(); setNotice('班级信息已更新。')}
   const committees = data?.members.filter(member => member.role === 'committee')
   return <div className="stack">
-    <PageTitle label="班级生活" title="班级信息" detail="查阅班级简介、班委分工、成员信息和值日安排。" actions={manager && data && <button className="btn primary" onClick={() => setEditor('settings')}><Pencil size={16}/>编辑班级设置</button>}/>
+    <PageTitle label="班级生活" title="班级信息" detail="查阅班级简介、班委分工、成员信息和值日安排。" actions={can(user,'class.settings.edit') && data && <button className="btn primary" onClick={() => setEditor('settings')}><Pencil size={16}/>编辑班级设置</button>}/>
     <Feedback {...info} retry={info.reload}/>
     {notice && <p className="feedback" role="status">{notice}</p>}
     {data && <>
@@ -109,20 +131,25 @@ export function ClassPage({manager, changed}: {manager: boolean; changed: () => 
       </Panel>
       <div className="dashboard-grid">
         <Panel title="班委分工" detail="班级日常事务的联系人">
-          {committees?.length ? <div className="rows">{committees.map(member => <div key={member.id} className="list-row"><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><span><strong>{member.name}</strong><small>{member.position || '班委'}</small></span>{manager && <button className="btn quiet row-tail" onClick={() => setEditor(member)}>编辑</button>}</div>)}</div> : <Empty>暂无班委分工记录。</Empty>}
+          {committees?.length ? <div className="rows">{committees.map(member => <div key={member.id} className="list-row"><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><span><strong>{member.name}</strong><small>{member.position || '班委'}</small></span><MemberEditButton user={user} member={member} edit={()=>setEditor(member)}/></div>)}</div> : <Empty>暂无班委分工记录。</Empty>}
         </Panel>
-        <Panel title="值日安排" detail="按日期查看区域与负责成员" actions={manager && <button className="btn quiet" onClick={() => setEditor('duties')}>编辑安排</button>}>
+        <Panel title="值日安排" detail="按日期查看区域与负责成员" actions={can(user,'class.duties.edit') && <button className="btn quiet" onClick={() => setEditor('duties')}>编辑安排</button>}>
           {data.duties.length ? <div className="rows">{[...data.duties].sort((a,b) => a.date.localeCompare(b.date)).map(duty => <div className="list-row" key={duty.id}><span><strong>{duty.area}</strong><small>{dateLabel(duty.date)} · {duty.names.join('、') || '待分配'}</small></span></div>)}</div> : <Empty>暂无值日安排。</Empty>}
         </Panel>
       </div>
       <Panel title="班级成员" detail={`在册成员 ${data.members.length} 人`}>
-        {data.members.length ? <div className="member-grid">{data.members.map(member => <div className="member-card" key={member.id}><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><div><strong>{member.name}</strong><small>{member.position || roleNames[member.role]}</small></div>{manager && <button aria-label={`编辑 ${member.name}`} className="btn quiet icon row-tail" onClick={() => setEditor(member)}><Pencil size={16}/></button>}</div>)}</div> : <Empty>暂无成员信息。</Empty>}
+        {data.members.length ? <div className="member-grid">{data.members.map(member => <div className="member-card" key={member.id}><Avatar id={member.avatarFileId} name={member.name} className="member-avatar"/><div><strong>{member.name}</strong><small>{member.position || roleNames[member.role]}</small></div><MemberEditButton user={user} member={member} edit={()=>setEditor(member)} compact/></div>)}</div> : <Empty>暂无成员信息。</Empty>}
       </Panel>
     </>}
-    {data && editor === 'settings' && <ClassSettings data={data} close={close} saved={saved}/>}
-    {data && editor === 'duties' && <DutyEditor data={data} close={close} saved={saved}/>}
-    {data && editor && typeof editor !== 'string' && <MemberEditor data={data} member={editor} close={close} saved={saved}/>}
+    {data && editor === 'settings' && can(user,'class.settings.edit') && <ClassSettings data={data} close={close} saved={saved}/>}
+    {data && editor === 'duties' && can(user,'class.duties.edit') && <DutyEditor data={data} close={close} saved={saved}/>}
+    {data && editor && typeof editor !== 'string' && canEditMember(user,editor) && <MemberEditor data={data} member={editor} close={close} saved={saved}/>}
   </div>
+}
+
+function canEditMember(user:User,member:Member) {return can(user,'class.members.edit')&&(user.role==='super_admin'||member.role==='student'||member.role==='committee')}
+export function MemberEditButton({user,member,edit,compact=false}:{user:User;member:Member;edit:()=>void;compact?:boolean}) {
+  return canEditMember(user,member)?<button aria-label={`编辑 ${member.name}`} className={'btn quiet row-tail'+(compact?' icon':'')} onClick={edit}>{compact?<Pencil size={16}/>:'编辑'}</button>:null
 }
 
 function ClassSettings({data, close, saved}: {data: ClassData; close: () => void; saved: () => void}) {
@@ -176,87 +203,5 @@ function MemberEditor({data, member, close, saved}: {data: ClassData; member: Me
       <Field label="班级分工"><input name="position" defaultValue={member.position} maxLength={100}/></Field>
       <UploadFiles purpose="avatar" entityId={member.id} max={1} label="成员头像" ids={avatars} setIds={setAvatars}/>
     </div></AsyncForm>
-  </Modal>
-}
-
-export function Accounts({changed}: {changed: () => void}) {
-  const users = useQuery<User[]>('/users')
-  const [editor, setEditor] = useState<{action: 'new' | 'edit' | 'batch' | 'reset'; user?: User}>()
-  const [query, setQuery] = useState('')
-  const [notice, setNotice] = useState('')
-  const results = users.data?.filter(user => `${user.username} ${user.name} ${roleNames[user.role]}`.toLowerCase().includes(query.trim().toLowerCase()))
-  const close = () => setEditor(undefined)
-  const saved = (message: string) => {close(); users.reload(); changed(); setNotice(message)}
-  return <div className="stack">
-    <PageTitle label="管理设置" title="账号与权限" detail="统一创建成员账号，分配班委身份与班费维护权限。" actions={<><button className="btn" onClick={() => setEditor({action: 'batch'})}>批量创建</button><button className="btn primary" onClick={() => setEditor({action: 'new'})}><UserRoundPlus size={18}/>创建账号</button></>}/>
-    <Panel title="成员账号" actions={<input type="search" aria-label="搜索账号" placeholder="搜索姓名、用户名或身份" value={query} onChange={event => setQuery(event.target.value)}/>}>
-      <Feedback {...users} retry={users.reload}/>
-      {notice && <p className="feedback" role="status">{notice}</p>}
-      {results && (results.length ? <div className="rows">{results.map(user => <div className="list-row account-row" key={user.id}>
-        <Avatar id={user.avatarFileId} name={user.name}/><span><strong>{user.name}</strong><small>{user.username} · {roleNames[user.role]}</small></span>
-        <div className="badge-group row-tail">{user.role === 'admin' ? <><Badge tone="good"><ShieldCheck size={15}/>全部管理权限</Badge><Badge>{user.inClass ? '已纳入班级名单' : '未纳入班级名单'}</Badge></> : user.role === 'committee' && user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
-        <div className="actions"><button className="btn quiet" onClick={() => setEditor({action: 'edit', user})}><Pencil size={16}/>编辑</button><button className="btn quiet" onClick={() => setEditor({action: 'reset', user})}><KeyRound size={16}/>重置密码</button></div>
-      </div>)}</div> : <Empty>没有符合条件的账号。</Empty>)}
-    </Panel>
-    {(editor?.action === 'new' || editor?.action === 'edit') && <AccountEditor user={editor.user} close={close} saved={() => saved('账号已保存。')}/>}
-    {editor?.action === 'reset' && editor.user && <ResetPassword user={editor.user} close={close} saved={() => saved('密码已重置。')}/>}
-    {editor?.action === 'batch' && <BatchAccounts close={close} saved={count => saved(`已创建 ${count} 个账号。`)}/>}
-  </div>
-}
-
-function AccountEditor({user, close, saved}: {user?: User; close: () => void; saved: () => void}) {
-  const [role, setRole] = useState<Role>(user?.role || 'student')
-  return <Modal title={user ? '编辑账号 · ' + user.name : '创建账号'} close={close}>
-    <AsyncForm cancel={close} submit={async form => {
-      const input = {name: val(form, 'name'), role, inClass: role !== 'admin' || checked(form, 'inClass'), financeManage: role === 'committee' && checked(form, 'financeManage')}
-      if (user) await api('/users/' + user.id, 'PUT', {...input, active: checked(form, 'active'), version: user.version})
-      else await api('/users', 'POST', {...input, username: val(form, 'username'), password: form.get('password')})
-      saved()
-    }}>
-      <div className="form-grid">
-        {!user && <Field label="用户名"><input name="username" required maxLength={64} autoComplete="off"/></Field>}
-        <Field label="姓名"><input name="name" required maxLength={80} defaultValue={user?.name}/></Field>
-        <Field label="身份"><select value={role} onChange={event => setRole(event.target.value as Role)}>{Object.entries(roleNames).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
-        {!user && <Field label="初始密码" wide hint="至少 8 位，成员首次登录时需修改。"><input type="password" name="password" required minLength={8} maxLength={128} autoComplete="new-password"/></Field>}
-        {user && <label className="check wide"><input type="checkbox" name="active" defaultChecked={user.active}/>启用账号</label>}
-        {role === 'committee' && <label className="check wide"><input type="checkbox" name="financeManage" defaultChecked={user?.financeManage}/>授予班费维护权限</label>}
-        {role === 'admin' && <>
-          <label className="check wide"><input type="checkbox" name="inClass" defaultChecked={user?.role === 'admin' && user.inClass}/>是否纳入班级名单</label>
-          <p className="muted wide">纳入后可参与作业、事务提交和缴费登记，并保留全部管理权限。已有任务可在“参与名单”中补入；取消纳入后保留历史提交，未完成任务自动免交。</p>
-        </>}
-      </div>
-    </AsyncForm>
-  </Modal>
-}
-
-function ResetPassword({user, close, saved}: {user: User; close: () => void; saved: () => void}) {
-  return <Modal title={'重置密码 · ' + user.name} close={close}>
-    <AsyncForm button="重置密码" cancel={close} submit={async form => {
-      await api('/users/' + user.id + '/reset-password', 'POST', {password: form.get('password')})
-      saved()
-    }}><Field label="临时密码" hint="至少 8 位。重置后该成员需重新登录并更新密码。"><input type="password" name="password" required minLength={8} maxLength={128} autoComplete="new-password"/></Field></AsyncForm>
-  </Modal>
-}
-
-function BatchAccounts({close, saved}: {close: () => void; saved: (count: number) => void}) {
-  const [show, setShow] = useState(false)
-  return <Modal title="批量创建账号" close={close} wide>
-    <AsyncForm cancel={close} button="批量创建" submit={async form => {
-      const roles: Record<string, Role> = {admin: 'admin', committee: 'committee', student: 'student', 管理员: 'admin', 班委: 'committee', 学生: 'student'}
-      const users = lines(val(form, 'rows')).map((line, index) => {
-        const values = line.split(line.includes('\t') ? '\t' : ',').map(value => value.trim())
-        const [username, name, role, password] = values
-        if (values.length !== 4 || !username || !name || !Object.hasOwn(roles, role) || !password || password.length < 8) throw new Error(`第 ${index + 1} 行格式不正确。请检查四列、身份和密码长度。`)
-        return {username, name, role: roles[role], password}
-      })
-      if (!users.length) throw new Error('请填写至少一个账号。')
-      const result = await api<{count: number}>('/users/batch', 'POST', {users})
-      saved(result.count)
-    }}>
-      <div className="stack fields"><p className="muted">每行四列，依次填写用户名、姓名、身份、初始密码。使用英文逗号或制表符分隔。身份可填管理员、班委或学生。</p>
-        <Field label="账号清单"><textarea name="rows" rows={8} required spellCheck={false} className={show ? '' : 'masked'} autoComplete="off"/></Field>
-        <label className="check"><input type="checkbox" checked={show} onChange={event => setShow(event.target.checked)}/>显示输入内容</label>
-      </div>
-    </AsyncForm>
   </Modal>
 }

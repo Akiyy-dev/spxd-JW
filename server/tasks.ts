@@ -1,7 +1,9 @@
 import ExcelJS from 'exceljs';
-import type { FastifyInstance } from 'fastify';
+import { isDeepStrictEqual } from 'node:util';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { conflict, HttpError, json, now, parse, requireManager, requireUser, uid, versionSchema, type User } from './common.ts';
+import { conflict, HttpError, json, now, parse, requirePermission, requireUser, uid, versionSchema, type User } from './common.ts';
+import { can, isClassMember } from '../shared/permissions.ts';
 import type { Store } from './db.ts';
 import { bindAttachments, createBundle, createExport, validateAttachments } from './files.ts';
 
@@ -81,9 +83,9 @@ interface SubmissionRow {
 const tasksSelect = 'SELECT t.*, u.name AS author_name FROM tasks t JOIN users u ON u.id=t.author_id';
 const submissionsSelect = 'SELECT s.*, u.name FROM submissions s JOIN users u ON u.id=s.user_id';
 
-function taskRow(db: Store, kind: Kind, id: string, user: User) {
+function taskRow(db: Store, kind: Kind, id: string, user?: User) {
   const row = db.get<TaskRow>(`${tasksSelect} WHERE t.id=? AND t.kind=?`, id, kind);
-  if (!row || (user.role === 'student' && row.status === 'draft')) throw new HttpError(404, '任务不存在');
+  if (!row || (user && row.status === 'draft' && !can(user, `${kind}.drafts.read`))) throw new HttpError(404, '任务不存在');
   return row;
 }
 
@@ -120,16 +122,20 @@ function taskView(db: Store, row: TaskRow, user: User) {
   const latest = db.get<SubmissionRow>(`${submissionsSelect} WHERE s.task_id=? AND s.user_id=? ORDER BY s.version DESC LIMIT 1`, row.id, user.id);
   return {
     ...input, id:row.id, kind:row.kind, version:row.version, createdAt:row.created_at, updatedAt:row.updated_at,
-    authorName:row.author_name, participantCount:input.requiresSubmission ? counts.participants : 0,
-    submittedCount:input.requiresSubmission ? counts.submitted : 0, mySubmission:latest ? submissionView(latest) : null,
+    authorName:row.author_name,
+    ...(can(user, `${row.kind}.participants.read`) ? {participantCount:input.requiresSubmission ? counts.participants : 0} : {}),
+    ...(can(user, `${row.kind}.submissions.read`) ? {submittedCount:input.requiresSubmission ? counts.submitted : 0} : {}),
+    mySubmission:latest ? submissionView(latest) : null,
     myParticipantStatus:input.requiresSubmission ? mine?.status ?? null : null,
+    ...(can(user, `${row.kind}.edit`) ? {hasSubmissions:Boolean(db.get('SELECT id FROM submissions WHERE task_id=? LIMIT 1',row.id))} : {}),
   };
 }
 
 function initializeParticipants(db: Store, id: string, requiresSubmission: boolean) {
   if (requiresSubmission) {
-    db.run(`INSERT INTO participants(task_id, user_id)
-      SELECT ?, id FROM users WHERE active=1 AND (role IN ('student', 'committee') OR in_class=1)`, id);
+    for (const member of db.all<Pick<User,'id'|'role'> & {in_class:number}>('SELECT id,role,in_class FROM users WHERE active=1')) {
+      if (isClassMember({...member,inClass:Boolean(member.in_class)})) db.run('INSERT INTO participants(task_id,user_id) VALUES (?,?)',id,member.id);
+    }
   }
   db.run('UPDATE tasks SET snapshot_created=1 WHERE id=?', id);
 }
@@ -207,7 +213,7 @@ function validateAnswers(fields: Field[], answers: Record<string, unknown>) {
   return {clean, files};
 }
 
-async function exportTask(db: Store, user: User, row: TaskRow) {
+async function exportTask(db: Store, user: User, row: TaskRow, request?: FastifyRequest) {
   const workbook = new ExcelJS.Workbook();
   const participants = workbook.addWorksheet('参与情况');
   const history = workbook.addWorksheet('提交历史');
@@ -235,7 +241,7 @@ async function exportTask(db: Store, user: User, row: TaskRow) {
   const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
   const filename = row.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 60);
   return createExport(db, user, `${filename}-提交汇总.xlsx`, buffer,
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', {kind:'task', id:row.id});
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', {kind:'task', id:row.id,permission:`${row.kind}.export`}, [], request);
 }
 
 function exportAnswers(submission: SubmissionRow) {
@@ -253,23 +259,24 @@ export function registerTasks(app: FastifyInstance, db: Store) {
     app.get(base, async request => {
       const user = requireUser(request);
       return db.all<TaskRow>(`${tasksSelect} WHERE t.kind=? AND (?=0 OR t.status<>'draft')
-        ORDER BY t.updated_at DESC, t.id`, kind, Number(user.role === 'student')).map(row => taskView(db, row, user));
+        ORDER BY t.updated_at DESC, t.id`, kind, Number(!can(user, `${kind}.drafts.read`))).map(row => taskView(db, row, user));
     });
     app.get<{Params:TaskParams}>(`${base}/:id`, async request => {
       const user = requireUser(request);
       return taskView(db, taskRow(db, kind, request.params.id, user), user);
     });
     app.post(base, async (request, reply) => {
-      const user = requireManager(request);
+      const user = requirePermission(request, `${kind}.create`);
       const parsed = parse(taskInput.partial().required({title:true}), request.body);
       const input = validatedTaskInput({
         course:'', description:'', deadline:null, allowLate:false, requiresSubmission:true, attachmentRequired:false,
         status:'draft', fields:[], attachments:[], ...parsed,
       }, kind);
       if (input.status === 'archived') throw new HttpError(400, '新任务可以保存草稿或发布');
+      if (input.status === 'published') requirePermission(request, `${kind}.publish`);
       const task = db.transaction(() => {
         const id = uid();
-        validateAttachments(db, user, input.attachments, 'task-attachment');
+        validateAttachments(db, user, input.attachments, 'task-attachment', undefined, kind);
         const createdAt = now();
         db.run(`INSERT INTO tasks (id, kind, title, course, description, deadline, allow_late, requires_submission,
           attachment_required, status, fields, attachments, author_id, created_at, updated_at)
@@ -280,38 +287,47 @@ export function registerTasks(app: FastifyInstance, db: Store) {
         bindAttachments(db, input.attachments, id);
         if (input.status === 'published') initializeParticipants(db, id, input.requiresSubmission);
         db.audit(user.id, `${kind}.create`, id, {status:input.status});
-        return taskView(db, taskRow(db, kind, id, user), user);
+        return taskView(db, taskRow(db, kind, id), user);
       });
       return reply.code(201).send(task);
     });
     app.put<{Params:TaskParams}>(`${base}/:id`, async request => {
-      const user = requireManager(request);
+      const user = requireUser(request);
       const {version, ...changes} = parse(taskInput.partial().extend({version:versionSchema}), request.body);
       const {id} = request.params;
       return db.transaction(() => {
         const row = taskRow(db, kind, id, user);
         conflict(row.version, version);
-        const next = validatedTaskInput({...taskInputFromRow(row), ...changes}, kind);
+        const previous = taskInputFromRow(row);
+        const next = validatedTaskInput({...previous, ...changes}, kind);
+        const {status:previousStatus,...previousContent} = previous;
+        const {status:nextStatus,...nextContent} = next;
+        const contentChanged = !isDeepStrictEqual(previousContent,nextContent);
+        if (contentChanged || previousStatus === nextStatus) requirePermission(request, `${kind}.edit`);
+        if (contentChanged && (previousStatus === 'published' || nextStatus === 'published')) requirePermission(request, `${kind}.publish`);
+        if (previousStatus !== nextStatus) requirePermission(request, `${kind}.${nextStatus === 'published' ? 'publish' : nextStatus === 'draft' ? 'withdraw' : 'archive'}`);
         validateTaskUpdate(db, row, next);
-        if (changes.attachments) validateAttachments(db, user, next.attachments, 'task-attachment', id);
+        const attachmentsChanged = !isDeepStrictEqual(previous.attachments,next.attachments);
+        if (attachmentsChanged) validateAttachments(db, user, next.attachments, 'task-attachment', id, kind);
         db.run(`UPDATE tasks SET title=?, course=?, description=?, deadline=?, allow_late=?, requires_submission=?,
           attachment_required=?, status=?, fields=?, attachments=?, version=version+1, updated_at=? WHERE id=?`,
         next.title, next.course, next.description, next.deadline, Number(next.allowLate), Number(next.requiresSubmission),
         Number(next.attachmentRequired), next.status, JSON.stringify(next.fields), JSON.stringify(next.attachments), now(), id);
-        if (changes.attachments) bindAttachments(db, next.attachments, id);
+        if (attachmentsChanged) bindAttachments(db, next.attachments, id);
         if (next.status === 'published' && !row.snapshot_created) initializeParticipants(db, id, next.requiresSubmission);
         db.audit(user.id, `${kind}.update`, id, {version:row.version + 1, previousStatus:row.status, status:next.status});
-        return taskView(db, taskRow(db, kind, id, user), user);
+        return taskView(db, taskRow(db, kind, id), user);
       });
     });
     app.get<{Params:TaskParams;Querystring:{history?:string}}>(`${base}/:id/submissions`, async request => {
       const user = requireUser(request);
+      if (user.role !== 'student') requirePermission(request, `${kind}.submissions.read`);
       const task = taskRow(db, kind, request.params.id, user);
       return getSubmissionRows(db, task.id, user.role === 'student' ? user.id : undefined, request.query.history === '1').map(submissionView);
     });
     app.post<{Params:TaskParams}>(`${base}/:id/submissions`, async (request, reply) => {
       const user = requireUser(request);
-      if (!user.inClass) throw new HttpError(403, '您未纳入班级名单，不能提交');
+      if (!isClassMember(user)) throw new HttpError(403, '您未纳入班级名单，不能提交');
       const input = parse(submissionInput, request.body);
       const {id} = request.params;
       const submission = db.transaction(() => {
@@ -345,12 +361,12 @@ export function registerTasks(app: FastifyInstance, db: Store) {
       return reply.code(201).send(submission);
     });
     app.get<{Params:TaskParams}>(`${base}/:id/participants`, async request => {
-      const user = requireManager(request);
+      const user = requirePermission(request, `${kind}.participants.read`);
       const row = taskRow(db, kind, request.params.id, user);
       return participantRows(db, row.id).map(participant => ({...participant, submitted:Boolean(participant.submitted)}));
     });
     app.put<{Params:TaskParams}>(`${base}/:id/participants`, async request => {
-      const user = requireManager(request);
+      const user = requirePermission(request, `${kind}.participants.manage`);
       const input = parse(z.object({userIds:z.array(z.string().uuid()).max(1000), version:versionSchema}), request.body);
       const {id} = request.params;
       const userIds = [...new Set(input.userIds)];
@@ -359,7 +375,8 @@ export function registerTasks(app: FastifyInstance, db: Store) {
         conflict(row.version, input.version);
         if (!row.snapshot_created || !row.requires_submission) throw new HttpError(409, '首次发布需要提交的任务后才能调整名单');
         for (const userId of userIds) {
-          if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND (role<>'admin' OR in_class=1)", userId)) {
+          const member = db.get<Pick<User,'role'> & {in_class:number}>('SELECT role,in_class FROM users WHERE id=? AND active=1',userId);
+          if (!member || !isClassMember({...member,inClass:Boolean(member.in_class)})) {
             throw new HttpError(400, '参与名单只能包含启用且纳入班级名单的账号');
           }
         }
@@ -374,11 +391,14 @@ export function registerTasks(app: FastifyInstance, db: Store) {
       });
     });
     app.post<{Params:TaskParams}>(`${base}/:id/export`, async request => {
-      const user = requireManager(request);
-      return exportTask(db, user, taskRow(db, kind, request.params.id, user));
+      const user = requirePermission(request, `${kind}.export`);
+      requirePermission(request, `${kind}.participants.read`);
+      requirePermission(request, `${kind}.submissions.read`);
+      return exportTask(db, user, taskRow(db, kind, request.params.id, user), request);
     });
     app.post<{Params:TaskParams}>(`${base}/:id/export-files`, async request => {
-      const user = requireManager(request);
+      const user = requirePermission(request, `${kind}.exportFiles`);
+      requirePermission(request, `${kind}.submissions.read`);
       const task = taskRow(db, kind, request.params.id, user);
       const {userIds} = parse(z.object({userIds:z.array(z.string().uuid()).max(1000).optional()}), request.body ?? {});
       const selected = userIds && new Set(userIds);
@@ -387,7 +407,7 @@ export function registerTasks(app: FastifyInstance, db: Store) {
         .flatMap(submission => json<string[]>(submission.attachments, []));
       if (!fileIds.length) throw new HttpError(400, '所选学生的最新提交没有附件');
       const title = task.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 60);
-      return createBundle(db, user, fileIds, `${title}-提交附件`, {kind:'task', id:task.id});
+      return createBundle(db, user, fileIds, `${title}-提交附件`, {kind:'task', id:task.id,permission:`${kind}.exportFiles`}, request);
     });
   }
   app.get('/api/submissions/history', async request => {

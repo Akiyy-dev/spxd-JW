@@ -4,6 +4,7 @@ import { api, dateCN, timestamp, useQuery } from './api'
 import { createId } from './id'
 import { AsyncForm, Badge, checked, Empty, ExportButton, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 import type { Entry, Fee, Ledger, Payment, User } from './types'
+import { can } from '../shared/permissions'
 
 const base = '/finance'
 const yuan = new Intl.NumberFormat('zh-CN', {style: 'currency', currency: 'CNY'})
@@ -27,18 +28,18 @@ export function Finance({user}: {user: User}) {
   const [from, setFrom] = useState('')
   const [until, setUntil] = useState('')
   const [showVoided, setShowVoided] = useState(false)
+  const canViewAll = can(user, 'finance.read')
   const needsMembers = tab === 'fees' || editor?.kind === 'fee' || editor?.kind === 'payment'
-  const members = useQuery<LedgerMember[]>(needsMembers && data?.canViewAll ? base + '/members' : null)
+  const members = useQuery<LedgerMember[]>(needsMembers && canViewAll ? base + '/members' : null)
   const close = () => setEditor(undefined)
   const saved = () => {close(); query.reload(); setNotice('班费记录已保存。')}
-  const canManage = !!data?.canManage
   const entries = data?.entries.filter(entry => (!type || entry.type === type) && (!from || entry.date >= from) && (!until || entry.date <= until) && (showVoided || !entry.voided))
   const feeTitle = (id: string) => data?.fees.find(item => item.id === id)?.title || '缴费事项'
   return <div className="stack">
-    <PageTitle label="班级收支" title="班费管理" detail="查阅班费收支公示和已发生的缴费记录。" actions={data?.canViewAll && <>
-      <button className="btn" onClick={() => setEditor({kind: 'history'})}><History size={17}/>修订记录</button>
-      <ExportButton path={base + '/export'}/>
-      {canManage && <button className="btn primary" onClick={() => setEditor({kind: 'entry'})}><Plus size={18}/>新增账目</button>}
+    <PageTitle label="班级收支" title="班费管理" detail="查阅班费收支公示和已发生的缴费记录。" actions={<>
+      {can(user, 'finance.history') && <button className="btn" onClick={() => setEditor({kind: 'history'})}><History size={17}/>修订记录</button>}
+      {can(user, 'finance.export') && <ExportButton path={base + '/export'}/>}
+      {can(user, 'finance.entries.create') && <button className="btn primary" onClick={() => setEditor({kind: 'entry'})}><Plus size={18}/>新增账目</button>}
     </>} />
     <Feedback {...query} retry={query.reload}/>
     {notice && <p className="feedback" role="status">{notice}</p>}
@@ -52,46 +53,47 @@ export function Finance({user}: {user: User}) {
           <select aria-label="账目类型" value={type} onChange={event => setType(event.target.value)}><option value="">全部类型</option>{Object.entries(entryTypes).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select>
           <label className="inline-label">开始日期<input type="date" value={from} onChange={event => setFrom(event.target.value)}/></label>
           <label className="inline-label">结束日期<input type="date" value={until} min={from || undefined} onChange={event => setUntil(event.target.value)}/></label>
-          {data.canViewAll && <label className="check"><input type="checkbox" checked={showVoided} onChange={event => setShowVoided(event.target.checked)}/>显示作废</label>}
+          {canViewAll && <label className="check"><input type="checkbox" checked={showVoided} onChange={event => setShowVoided(event.target.checked)}/>显示作废</label>}
         </div>
         {entries?.length ? <div className="table-scroll" tabIndex={0} aria-label="收支台账表"><table><thead><tr><th>发生日期</th><th>类别及说明</th><th>金额</th><th>凭证与操作</th></tr></thead><tbody>{entries.map(entry => <tr key={entry.id}>
           <td className="nowrap">{entry.date}</td>
           <td><div className="badge-group"><Badge tone={entry.type === 'income' ? 'good' : ''}>{entryTypes[entry.type]}</Badge>{entry.voided && <Badge tone="bad">已作废</Badge>}{entry.paymentId && <Badge>缴费入账</Badge>}</div><strong>{entry.category || entryTypes[entry.type]}</strong>{entry.description && <p className="muted prose">{entry.description}</p>}</td>
           <td className="money nowrap">{entry.type === 'expense' ? '−' : ''}{money(entry.amount)}</td>
-          <td><FileList ids={entry.receiptIds}/>{canManage && !entry.voided && !entry.paymentId && <div className="actions"><button className="btn quiet" onClick={() => setEditor({kind: 'entry', entry})}>修订</button><button className="btn quiet" onClick={() => setEditor({kind: 'void', target: 'entries', record: entry})}>作废</button></div>}</td>
+          <td><FileList ids={entry.receiptIds}/>{!entry.voided && !entry.paymentId && <div className="actions">{can(user, 'finance.entries.edit') && <button className="btn quiet" onClick={() => setEditor({kind: 'entry', entry})}>修订</button>}{can(user, 'finance.entries.void') && <button className="btn quiet" onClick={() => setEditor({kind: 'void', target: 'entries', record: entry})}>作废</button>}</div>}</td>
         </tr>)}</tbody></table></div> : <Empty>当前筛选下没有收支记录。</Empty>}
       </Panel> : <>
-        <Panel title="缴费事项" detail={data.canViewAll ? '查看应缴、实缴、待缴和超缴明细。' : '这里展示与你相关的应缴和实缴金额。'} actions={canManage && <button className="btn primary" onClick={() => setEditor({kind: 'fee'})}><Plus size={17}/>新增缴费事项</button>}>
+        <Panel title="缴费事项" detail={canViewAll ? '查看应缴、实缴、待缴和超缴明细。' : '这里展示与你相关的应缴和实缴金额。'} actions={can(user, 'finance.fees.create') && <button className="btn primary" onClick={() => setEditor({kind: 'fee'})}><Plus size={17}/>新增缴费事项</button>}>
           <Feedback {...members} retry={members.reload}/>
-          {data.fees.length ? <div className="stack">{data.fees.map(fee => <FeeCard key={fee.id} fee={fee} ledger={data} members={members.data || []} user={user} actions={canManage && <>
-            <button className="btn" onClick={() => setEditor({kind: 'fee', fee})}>编辑事项</button><button className="btn primary" onClick={() => setEditor({kind: 'payment', fee})}>登记实缴</button>
+          {data.fees.length ? <div className="stack">{data.fees.map(fee => <FeeCard key={fee.id} fee={fee} ledger={data} members={members.data || []} user={user} actions={<>
+            {can(user, 'finance.fees.edit') && <button className="btn" onClick={() => setEditor({kind: 'fee', fee})}>编辑事项</button>}{can(user, 'finance.payments.create') && <button className="btn primary" onClick={() => setEditor({kind: 'payment', fee})}>登记实缴</button>}
           </>}/>)}</div> : <Empty>暂无缴费事项。</Empty>}
         </Panel>
-        <Panel title={data.canViewAll ? '实缴登记' : '我的实缴记录'} detail="每次实际到账保留一条登记记录。" actions={canManage && !!data.fees.length && <button className="btn" onClick={() => setEditor({kind: 'payment'})}><Plus size={17}/>新增登记</button>}>
+        <Panel title={canViewAll ? '实缴登记' : '我的实缴记录'} detail="每次实际到账保留一条登记记录。" actions={can(user, 'finance.payments.create') && !!data.fees.length && <button className="btn" onClick={() => setEditor({kind: 'payment'})}><Plus size={17}/>新增登记</button>}>
           {data.payments.length ? <div className="rows">{data.payments.map(payment => <div key={payment.id} className="list-row payment-row">
-            <span className="row-icon"><Banknote size={18}/></span><div><strong>{feeTitle(payment.feeId)}</strong><small>{payment.date}{data.canViewAll ? ' · ' + payment.name : ''}</small>{payment.description && <p className="muted prose">{payment.description}</p>}<FileList ids={payment.receiptIds}/></div>
+            <span className="row-icon"><Banknote size={18}/></span><div><strong>{feeTitle(payment.feeId)}</strong><small>{payment.date}{canViewAll ? ' · ' + payment.name : ''}</small>{payment.description && <p className="muted prose">{payment.description}</p>}<FileList ids={payment.receiptIds}/></div>
             <div className="row-tail badge-group"><strong className="money">{money(payment.amount)}</strong>{payment.voided && <Badge tone="bad">已作废</Badge>}</div>
-            {canManage && !payment.voided && <div className="actions"><button className="btn quiet" onClick={() => setEditor({kind: 'payment', payment})}>修订</button><button className="btn quiet" onClick={() => setEditor({kind: 'void', target: 'payments', record: payment})}>作废</button></div>}
+            {!payment.voided && <div className="actions">{can(user, 'finance.payments.edit') && <button className="btn quiet" onClick={() => setEditor({kind: 'payment', payment})}>修订</button>}{can(user, 'finance.payments.void') && <button className="btn quiet" onClick={() => setEditor({kind: 'void', target: 'payments', record: payment})}>作废</button>}</div>}
           </div>)}</div> : <Empty>暂无实缴记录。</Empty>}
         </Panel>
       </>}
     </>}
-    {canManage && editor?.kind === 'entry' && <EntryEditor entry={editor.entry} hasOpening={!!data?.entries.some(entry => entry.type === 'opening' && !entry.voided)} close={close} saved={saved}/>}
-    {canManage && editor?.kind === 'fee' && <RosterModal title={editor.fee ? '编辑缴费事项' : '新增缴费事项'} members={members} close={close} render={roster => <FeeEditor fee={editor.fee} members={roster} close={close} saved={saved}/>}/>}
-    {canManage && editor?.kind === 'payment' && data && <RosterModal title={editor.payment ? '修订实缴登记' : '登记实际到账'} members={members} close={close} render={roster => <PaymentEditor payment={editor.payment} initialFee={editor.fee} fees={data.fees} members={roster} close={close} saved={saved}/>}/>}
-    {canManage && editor?.kind === 'void' && <Modal title="作废记录" close={close}>
+    {editor?.kind === 'entry' && can(user, editor.entry ? 'finance.entries.edit' : 'finance.entries.create') && <EntryEditor entry={editor.entry} hasOpening={!!data?.entries.some(entry => entry.type === 'opening' && !entry.voided)} close={close} saved={saved}/>}
+    {editor?.kind === 'fee' && can(user, editor.fee ? 'finance.fees.edit' : 'finance.fees.create') && <RosterModal title={editor.fee ? '编辑缴费事项' : '新增缴费事项'} members={members} close={close} render={roster => <FeeEditor fee={editor.fee} members={roster} close={close} saved={saved}/>}/>}
+    {editor?.kind === 'payment' && can(user, editor.payment ? 'finance.payments.edit' : 'finance.payments.create') && data && <RosterModal title={editor.payment ? '修订实缴登记' : '登记实际到账'} members={members} close={close} render={roster => <PaymentEditor payment={editor.payment} initialFee={editor.fee} fees={data.fees} members={roster} close={close} saved={saved}/>}/>}
+    {editor?.kind === 'void' && can(user, editor.target === 'entries' ? 'finance.entries.void' : 'finance.payments.void') && <Modal title="作废记录" close={close}>
       <AsyncForm danger cancel={close} button="确认作废" submit={async form => {
         await api(`${base}/${editor.target}/${editor.record.id}/void`, 'POST', {version: editor.record.version, reason: val(form, 'reason')})
         saved()
       }}><p className="muted">金额 {money(editor.record.amount)} 将从有效账目中移除，历史记录会保留。</p><Reason /></AsyncForm>
     </Modal>}
-    {data?.canViewAll && editor?.kind === 'history' && <FinanceHistory close={close}/>}
+    {can(user, 'finance.history') && editor?.kind === 'history' && <FinanceHistory close={close}/>}
   </div>
 }
 
 function FeeCard({fee, ledger, members, user, actions}: {fee: Fee; ledger: Ledger; members: LedgerMember[]; user: User; actions: React.ReactNode}) {
+  const canViewAll = can(user, 'finance.read')
   const payments = ledger.payments.filter(payment => payment.feeId === fee.id && !payment.voided)
-  const ids = ledger.canViewAll ? [...new Set([...fee.userIds, ...payments.map(payment => payment.userId)])] : [user.id]
+  const ids = canViewAll ? [...new Set([...fee.userIds, ...payments.map(payment => payment.userId)])] : [user.id]
   const amounts = ids.map(id => {
     const paid = payments.filter(payment => payment.userId === id).reduce((sum, payment) => sum + payment.amount, 0)
     const due = fee.userIds.includes(id) ? fee.amount : 0
@@ -100,9 +102,9 @@ function FeeCard({fee, ledger, members, user, actions}: {fee: Fee; ledger: Ledge
   })
   const sums = amounts.reduce((sum, row) => ({due: sum.due + row.due, paid: sum.paid + row.paid, remaining: sum.remaining + row.remaining, excess: sum.excess + row.excess}), {due: 0, paid: 0, remaining: 0, excess: 0})
   return <article className="nested-panel fee-card">
-    <div className="split"><div><h3>{fee.title}</h3><p className="muted">{fee.deadline ? '登记截止 ' + fee.deadline : '无登记截止日期'}{ledger.canViewAll && ` · ${fee.userIds.length} 位成员 · 每人 ${money(fee.amount)}`}</p></div><div className="actions">{actions}</div></div>
+    <div className="split"><div><h3>{fee.title}</h3><p className="muted">{fee.deadline ? '登记截止 ' + fee.deadline : '无登记截止日期'}{canViewAll && ` · ${fee.userIds.length} 位成员 · 每人 ${money(fee.amount)}`}</p></div><div className="actions">{actions}</div></div>
     <div className="mini-metrics">{[['应缴', sums.due], ['已缴', sums.paid], ['待缴', sums.remaining], ['超缴', sums.excess]].map(([label, amount]) => <div key={label}><span>{label}</span><strong>{money(Number(amount))}</strong></div>)}</div>
-    {ledger.canViewAll && amounts.length > 0 && <details><summary>查看成员明细</summary><div className="table-scroll" tabIndex={0} aria-label="缴费成员明细"><table><thead><tr><th>成员</th><th>应缴</th><th>实缴</th><th>待缴</th><th>超缴</th></tr></thead><tbody>{amounts.map(row => <tr key={row.id}><td>{row.name}</td>{[row.due, row.paid, row.remaining, row.excess].map((amount, index) => <td key={index} className="nowrap">{money(amount)}</td>)}</tr>)}</tbody></table></div></details>}
+    {canViewAll && amounts.length > 0 && <details><summary>查看成员明细</summary><div className="table-scroll" tabIndex={0} aria-label="缴费成员明细"><table><thead><tr><th>成员</th><th>应缴</th><th>实缴</th><th>待缴</th><th>超缴</th></tr></thead><tbody>{amounts.map(row => <tr key={row.id}><td>{row.name}</td>{[row.due, row.paid, row.remaining, row.excess].map((amount, index) => <td key={index} className="nowrap">{money(amount)}</td>)}</tr>)}</tbody></table></div></details>}
   </article>
 }
 
@@ -142,7 +144,7 @@ function EntryEditor({entry, hasOpening, close, saved}: {entry?: Entry; hasOpeni
         <Field label="发生日期"><input type="date" name="date" required defaultValue={entry?.date || dateCN()}/></Field>
         <Field label="账目类别"><input name="category" maxLength={100} defaultValue={entry?.category}/></Field>
         <Field label="说明" wide><textarea name="description" rows={4} maxLength={2000} defaultValue={entry?.description}/></Field>
-        <UploadFiles purpose="receipt" entityId={entry?.id} ids={receipts} setIds={setReceipts} label="账目凭证"/>
+        <UploadFiles purpose="receipt" context={entry ? 'finance.entries.edit' : 'finance.entries.create'} entityId={entry?.id} ids={receipts} setIds={setReceipts} label="账目凭证"/>
         <label className="check wide"><input type="checkbox" name="publicReceipt" defaultChecked={entry?.publicReceipt}/>公示凭证给班级成员</label>
         {entry && <Reason/>}
       </div>
@@ -197,7 +199,7 @@ function PaymentEditor({payment, initialFee, fees, members, close, saved}: {paym
       <Amount value={payment?.amount}/>
       <Field label="到账日期"><input name="date" type="date" required defaultValue={payment?.date || dateCN()}/></Field>
       <Field label="到账说明" wide><textarea name="description" rows={3} maxLength={2000} defaultValue={payment?.description}/></Field>
-      <UploadFiles purpose="receipt" entityId={payment?.id} ids={receipts} setIds={setReceipts} label="到账凭证"/>
+      <UploadFiles purpose="receipt" context={payment ? 'finance.payments.edit' : 'finance.payments.create'} entityId={payment?.id} ids={receipts} setIds={setReceipts} label="到账凭证"/>
       <label className="check wide"><input type="checkbox" name="publicReceipt" defaultChecked={payment?.publicReceipt}/>公示凭证给班级成员</label>
       {payment && <Reason/>}
     </div>

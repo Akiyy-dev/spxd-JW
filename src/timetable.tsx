@@ -2,8 +2,9 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, MapPin, Pencil, Plus, Trash2 } from 'lucide-react'
 import { api, dateCN, dateLabel, errorMessage, useQuery } from './api'
 import { createId } from './id'
+import { can } from '../shared/permissions'
 import { AsyncForm, Badge, Empty, Feedback, Field, Modal, PageTitle, Panel, val } from './ui'
-import type { Course, Period, Timetable, TimetableTemplate, TimetableTemplates } from './types'
+import type { Course, Period, Timetable, TimetableTemplate, TimetableTemplates, User } from './types'
 
 const weekdays = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
 const colors = [
@@ -44,7 +45,13 @@ export function DailyCourses({courses, periods}: {courses: Course[]; periods: Pe
   })}</div>
 }
 
-export function TimetablePage({manager}: {manager: boolean}) {
+export function TimetablePage({user}: {user?: User | null}) {
+  const readTemplates = can(user, 'timetable.templates.read')
+  const createTemplate = can(user, 'timetable.templates.create')
+  const editTemplate = can(user, 'timetable.templates.edit')
+  const editCurrent = can(user, 'timetable.current.edit')
+  const writeException = can(user, 'timetable.exceptions.write')
+  const removeException = can(user, 'timetable.exceptions.remove')
   const [date, setDate] = useState(dateCN)
   const [view, setView] = useState<'day' | 'week'>(() => matchMedia('(max-width: 760px)').matches ? 'day' : 'week')
   const [editing, setEditing] = useState<'templates' | 'exception' | null>(null)
@@ -52,7 +59,7 @@ export function TimetablePage({manager}: {manager: boolean}) {
   const [notice, setNotice] = useState('')
   const [version, setVersion] = useState(0)
   const day = useQuery<Timetable>('/public/timetable?date=' + date)
-  const templates = useQuery<TimetableTemplates>(manager && editing === 'templates' ? '/timetable/templates' : null)
+  const templates = useQuery<TimetableTemplates>(readTemplates && editing === 'templates' ? '/timetable/templates' : null)
   const monday = shiftDate(date, 1 - dayOfWeek(date))
   const weekDates = weekdays.map((_, index) => shiftDate(monday, index))
   const [week, setWeek] = useState<{monday: string; version: number; days?: Timetable[]; error?: string}>()
@@ -65,6 +72,7 @@ export function TimetablePage({manager}: {manager: boolean}) {
     return () => {active = false}
   }, [monday, view, version])
   const currentWeek = week?.monday === monday && week.version === version ? week : undefined
+  const mayEditTemplate = templateEditor?.mode === 'new' ? createTemplate : templateEditor?.mode === 'current' ? editCurrent : editTemplate && (templateEditor?.template?.id !== day.data?.templateId || editCurrent)
   function reload() {
     setVersion(previous => previous + 1)
     day.reload()
@@ -72,7 +80,12 @@ export function TimetablePage({manager}: {manager: boolean}) {
   }
   const move = (direction: number) => setDate(shiftDate(date, direction * (view === 'day' ? 1 : 7)))
   return <div className="stack">
-    <PageTitle label="学习安排" title="课程表" detail="按节次查看当前已应用的周课表与临时调课。" actions={manager && day.data && <><button className="btn" onClick={() => setEditing('exception')}><CalendarDays size={17}/>临时调整</button><button className="btn" onClick={() => setEditing('templates')}>课表模板</button><button className="btn primary" onClick={() => setTemplateEditor({mode: 'current', selectionVersion: day.data!.selectionVersion})}><Pencil size={16}/>编辑当前课表</button></>}/>
+    <PageTitle label="学习安排" title="课程表" detail="按节次查看当前已应用的周课表与临时调课。" actions={day.data && <>
+      {writeException && <button className="btn" onClick={() => setEditing('exception')}><CalendarDays size={17}/>临时调整</button>}
+      {readTemplates && <button className="btn" onClick={() => setEditing('templates')}>课表模板</button>}
+      {createTemplate && !readTemplates && <button className="btn" onClick={() => setTemplateEditor({mode:'new',selectionVersion:day.data!.selectionVersion})}><Plus size={17}/>新建备用模板</button>}
+      {editCurrent && <button className="btn primary" onClick={() => setTemplateEditor({mode: 'current', selectionVersion: day.data!.selectionVersion})}><Pencil size={16}/>编辑当前课表</button>}
+    </>}/>
     {notice && <p className="feedback" role="status">{notice}</p>}
     <section className="panel timetable-panel">
       <div className="toolbar timetable-toolbar">
@@ -93,30 +106,30 @@ export function TimetablePage({manager}: {manager: boolean}) {
       </>}
       {day.data?.templateId && <p className="muted schedule-foot">当前课表：{day.data.templateName}，每周固定重复。</p>}
     </section>
-    {manager && day.data && day.data.exceptions.length > 0 && <Panel title="临时调整记录" detail={dateLabel(date)}>
-      <div className="rows">{day.data.exceptions.filter(item => item.date === date).map(item => <ExceptionRow key={item.id} item={item} timetable={day.data!} reload={reload} />)}</div>
+    {(writeException || removeException || editCurrent || readTemplates) && day.data && day.data.exceptions.length > 0 && <Panel title="临时调整记录" detail={dateLabel(date)}>
+      <div className="rows">{day.data.exceptions.filter(item => item.date === date).map(item => <ExceptionRow key={item.id} item={item} timetable={day.data!} canRemove={removeException} reload={reload} />)}</div>
     </Panel>}
-    {manager && editing === 'templates' && !templateEditor && <Modal title="课表模板" close={() => setEditing(null)} wide>
-      <p className="muted">保存模板不会自动切换课表。管理员或班委点击“应用此模板”后，全班查看同一份周课表；临时调课随所属模板保留。</p>
+    {readTemplates && editing === 'templates' && !templateEditor && <Modal title="课表模板" close={() => setEditing(null)} wide>
+      <p className="muted">保存模板不会自动切换课表。具有应用权限的成员点击“应用此模板”后，全班查看同一份周课表；临时调课随所属模板保留。</p>
       <Feedback {...templates} retry={templates.reload}/>
       {templates.data && <div className="stack">
-        <button className="btn" onClick={() => setTemplateEditor({mode: 'new', selectionVersion: templates.data!.selectionVersion})}><Plus size={17}/>从当前课表新建模板</button>
+        {createTemplate && <button className="btn" onClick={() => setTemplateEditor({mode: 'new', selectionVersion: templates.data!.selectionVersion})}><Plus size={17}/>从当前课表新建模板</button>}
         {templates.data.templates.map(template => <article className="nested-panel" key={template.id}>
           <div className="split"><div><h3>{template.name}</h3><p className="muted">{template.courses.length} 门课程 · {template.periods.length} 个节次</p></div>{template.id === templates.data!.activeTemplateId && <Badge tone="good">正在使用</Badge>}</div>
-          <div className="actions"><button className="btn" onClick={() => setTemplateEditor({mode: 'saved', template, selectionVersion: templates.data!.selectionVersion})}>编辑模板</button>
-            {template.id !== templates.data!.activeTemplateId && <AsyncForm button="应用此模板" submit={async () => {
+          <div className="actions">{editTemplate && (template.id !== templates.data!.activeTemplateId || editCurrent) && <button className="btn" onClick={() => setTemplateEditor({mode: 'saved', template, selectionVersion: templates.data!.selectionVersion})}>编辑模板</button>}
+            {template.id !== templates.data!.activeTemplateId && can(user, 'timetable.templates.apply') && <AsyncForm button="应用此模板" submit={async () => {
               await api(`/timetable/templates/${template.id}/apply`, 'POST', {version: template.version, selectionVersion: templates.data!.selectionVersion})
               setEditing(null); setNotice(`已应用“${template.name}”，课表已更新。`); reload()
             }}>{null}</AsyncForm>}</div>
         </article>)}
-        {!templates.data.templates.length && <Empty>暂无保存的模板，可先编辑当前课表。</Empty>}
+        {!templates.data.templates.length && <Empty>暂无保存的模板。</Empty>}
       </div>}
     </Modal>}
-    {manager && templateEditor && day.data && <TemplateEditor timetable={day.data} {...templateEditor} close={() => setTemplateEditor(undefined)} saved={() => {
+    {mayEditTemplate && templateEditor && day.data && <TemplateEditor timetable={day.data} {...templateEditor} close={() => setTemplateEditor(undefined)} saved={() => {
       setNotice(templateEditor.mode === 'current' || templateEditor.template?.id === day.data!.templateId ? '当前课表已保存并立即生效。' : '模板已保存，可在课表模板中选择应用。')
       setTemplateEditor(undefined); reload()
     }} />}
-    {editing === 'exception' && day.data && <ExceptionEditor timetable={day.data} close={() => setEditing(null)} saved={() => {setEditing(null); reload()}} />}
+    {writeException && editing === 'exception' && day.data && <ExceptionEditor timetable={day.data} close={() => setEditing(null)} saved={() => {setEditing(null); reload()}} />}
   </div>
 }
 
@@ -207,10 +220,10 @@ function ExceptionEditor({timetable, close, saved}: {timetable: Timetable; close
   </Modal>
 }
 
-function ExceptionRow({item, timetable, reload}: {item: Timetable['exceptions'][number]; timetable: Timetable; reload: () => void}) {
+function ExceptionRow({item, timetable, canRemove, reload}: {item: Timetable['exceptions'][number]; timetable: Timetable; canRemove: boolean; reload: () => void}) {
   const [removing, setRemoving] = useState(false)
-  return <div className="list-row"><span><strong>{timetable.courses.find(course => course.id === item.courseId)?.name || item.course?.name || '课程'}</strong><small>{item.course?.notes}</small></span><Badge>{item.action === 'cancel' ? '停课' : '临时调课'}</Badge><button className="btn quiet" onClick={() => setRemoving(true)}>移除调整</button>
-    {removing && <Modal title="移除临时调整" close={() => setRemoving(false)}><AsyncForm button="移除调整" danger cancel={() => setRemoving(false)} submit={async () => {
+  return <div className="list-row"><span><strong>{timetable.courses.find(course => course.id === item.courseId)?.name || item.course?.name || '课程'}</strong><small>{item.course?.notes}</small></span><Badge>{item.action === 'cancel' ? '停课' : '临时调课'}</Badge>{canRemove && <button className="btn quiet" onClick={() => setRemoving(true)}>移除调整</button>}
+    {canRemove && removing && <Modal title="移除临时调整" close={() => setRemoving(false)}><AsyncForm button="移除调整" danger cancel={() => setRemoving(false)} submit={async () => {
       await api('/timetable/exceptions/' + item.id, 'DELETE', {templateId: timetable.templateId, version: timetable.version, selectionVersion: timetable.selectionVersion})
       setRemoving(false)
       reload()

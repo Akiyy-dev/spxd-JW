@@ -14,6 +14,7 @@
     "start": "tsx server/index.ts",
     "test": "tsx --test tests/*.test.ts",
     "setup": "tsx scripts/setup.ts",
+    "admin:promote": "tsx scripts/promote-admin.ts",
     "demo": "tsx scripts/demo.ts",
     "backup": "tsx scripts/backup.ts",
     "files:cleanup": "tsx scripts/cleanup.ts"

@@ -4,6 +4,7 @@ import {buildApp} from '../server/app.ts';
 import {createUser} from '../server/auth.ts';
 import {createStore} from '../server/db.ts';
 import {cleanupFiles,type StorageAdapter} from '../server/files.ts';
+import {PERMISSION_KEYS} from '../shared/permissions.ts';
 
 const password='Avatar-Testing123!';
 const animatedGif=Buffer.from('R0lGODlhAgACAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgACAAAIBgABCAQQEAAh+QQBDwABACwAAAAAAgACAIEAAP8AAAAAAAAAAAAIBgABCAQQEAA7','base64');
@@ -19,7 +20,7 @@ async function fixture(t:TestContext) {
   const app=await buildApp({db,storage});t.after(async()=>{await app.close();db.close()});
   const student=createUser(db,{username:'student',name:'同学',password,role:'student',mustChangePassword:false});
   const other=createUser(db,{username:'other',name:'其他同学',password,role:'student',mustChangePassword:false});
-  const admin=createUser(db,{username:'admin',name:'管理员',password,role:'admin',mustChangePassword:false});
+  const admin=createUser(db,{username:'admin',name:'管理员',password,role:'admin',permissions:[...PERMISSION_KEYS],mustChangePassword:false});
   const fresh=createUser(db,{username:'fresh',name:'新同学',password,role:'student'});
   const cookies:Record<string,Record<string,string>>={};
   for(const u of [student,other,admin,fresh]){const login=await app.inject({method:'POST',url:'/api/auth/login',payload:{username:u.username,password}});assert.equal(login.statusCode,200);cookies[u.id]={[login.cookies[0].name]:login.cookies[0].value};}

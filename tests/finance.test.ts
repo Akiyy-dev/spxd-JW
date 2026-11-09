@@ -7,6 +7,7 @@ import type { User } from '../server/common.ts';
 import { createStore } from '../server/db.ts';
 import { registerFiles, type StorageAdapter } from '../server/files.ts';
 import { registerFinance } from '../server/finance.ts';
+import { PERMISSION_KEYS } from '../shared/permissions.ts';
 
 const base = '/api/finance';
 const date = '2026-11-06';
@@ -20,9 +21,9 @@ function fixture(t: TestContext, storage?: StorageAdapter) {
     ['甲同学', 'student', false], ['乙同学', 'student', false], ['管理员', 'admin', false],
   ] as const) {
     const id = randomUUID();
-    users.set(name, { id, username: id, name, role, financeManage, inClass: role !== 'admin', active: true, version: 1, mustChangePassword: false });
-    db.run('INSERT INTO users(id,username,name,password_hash,role,finance_manage,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,?)',
-      id, id, name, 'test', role, Number(financeManage), date);
+    users.set(name, { id, username: id, name, role, financeManage, permissions: role === 'admin' ? [...PERMISSION_KEYS] : [], inClass: role !== 'admin', active: true, version: 1, mustChangePassword: false });
+    db.run('INSERT INTO users(id,username,name,password_hash,role,finance_manage,must_change_password,permissions,created_at) VALUES(?,?,?,?,?,?,0,?,?)',
+      id, id, name, 'test', role, Number(financeManage),JSON.stringify(users.get(name)!.permissions),date);
   }
   app.decorateRequest('user', null);
   app.addHook('onRequest', async req => { req.user = [...users.values()].find(user => user.id === req.headers['x-test-user']) ?? null; });
@@ -127,7 +128,7 @@ test('ledger totals include one active opening, independent income and expenses'
   assert.deepEqual([totalOpening, income, expense, balance], [12000, 1200, 2100, 11100]);
 });
 
-test('administrators without a finance flag maintain fees, entries and payments with audit and replay protection', async t => {
+test('administrators with explicit finance grants maintain fees, entries and payments with audit and replay protection', async t => {
   const { call, payment, users, db, student } = fixture(t);
   const adminCall = (method: 'GET' | 'POST' | 'PUT', path: string, payload?: object) => call(method, path, payload, '管理员');
   const feeInput = { title: '活动费用', amount: 2500, deadline: null, userIds: [student] };

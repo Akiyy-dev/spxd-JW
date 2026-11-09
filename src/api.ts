@@ -13,6 +13,7 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
   })
   if (!response.ok) {
     if (response.status === 401 && path !== '/auth/login') window.dispatchEvent(new Event('class-session-expired'))
+    if (response.status === 403 && path !== '/auth/me') window.dispatchEvent(new Event('class-permissions-changed'))
     const data = await response.json().catch(() => null)
     throw new ApiError(data?.message || `请求失败（${response.status}）`, response.status)
   }

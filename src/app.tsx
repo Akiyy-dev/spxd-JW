@@ -6,10 +6,11 @@ import { AsyncForm, Badge, Empty, Feedback, Field, PageTitle, Panel, val } from 
 import { roleNames, type Config, type Task, type Timetable, type User } from './types'
 import { TimetablePage, DailyCourses } from './timetable'
 import { Avatar, PersonalAvatar } from './avatar'
+import { can, effectivePermissions, isClassMember, PERMISSIONS } from '../shared/permissions'
 const Tasks = lazy(() => import('./tasks').then(module => ({default: module.Tasks})))
 const Resources = lazy(() => import('./catalog').then(module => ({default: module.Resources})))
 const ClassPage = lazy(() => import('./catalog').then(module => ({default: module.ClassPage})))
-const Accounts = lazy(() => import('./catalog').then(module => ({default: module.Accounts})))
+const Accounts = lazy(() => import('./accounts').then(module => ({default: module.Accounts})))
 const Finance = lazy(() => import('./finance').then(module => ({default: module.Finance})))
 
 const repositoryUrl = 'https://github.com/Akiyy-dev/spxd-JW'
@@ -45,7 +46,7 @@ export function App() {
   const closeMenu = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
   const [signingOut, setSigningOut] = useState(false)
-  const manager = user?.role === 'admin' || user?.role === 'committee'
+  const permissionKey = user ? JSON.stringify([user.id, user.role, user.inClass, user.financeManage, effectivePermissions(user)]) : 'guest'
 
   useEffect(() => {
     setDrawer(false)
@@ -104,12 +105,26 @@ export function App() {
     } catch (error) { setError(errorMessage(error)) }
   }
 
+  useEffect(() => {
+    if (!user) return
+    const refresh = () => { if (document.visibilityState === 'visible') void refreshIdentity() }
+    refresh()
+    window.addEventListener('focus', refresh)
+    window.addEventListener('class-permissions-changed', refresh)
+    const timer = window.setInterval(refresh, 30000)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('class-permissions-changed', refresh)
+      window.clearInterval(timer)
+    }
+  }, [user?.id, location.pathname])
+
   const guard = (content: ReactNode, admin = false) => {
     if (session.loading && user === undefined) return <Feedback loading />
     if (session.error && user === undefined) return <Feedback error={session.error} retry={session.reload} />
     if (!user) return <Navigate to="/login" replace state={{from: location.pathname + location.search}} />
     if (user.mustChangePassword && location.pathname !== '/account') return <Navigate to="/account" replace />
-    if (admin && user.role !== 'admin') return <Navigate to="/" replace />
+    if (admin && !can(user, 'accounts.read')) return <Navigate to="/" replace />
     return content
   }
 
@@ -123,7 +138,7 @@ export function App() {
       <nav aria-label="主导航">
         <p className="nav-label">{user ? '工作台' : '公开信息'}</p>
         {links.map(({path, label, icon: Icon}) => <NavLink key={path} to={path} end={path === '/'} onClick={() => setDrawer(false)}><Icon size={19} aria-hidden="true"/>{label}</NavLink>)}
-        {user && <><p className="nav-label">设置</p><NavLink to="/account" onClick={() => setDrawer(false)}><KeyRound size={19}/>个人账号</NavLink>{user.role === 'admin' && <NavLink to="/accounts" onClick={() => setDrawer(false)}><Settings2 size={19}/>账号与权限</NavLink>}</>}
+        {user && <><p className="nav-label">设置</p><NavLink to="/account" onClick={() => setDrawer(false)}><KeyRound size={19}/>个人账号</NavLink>{can(user, 'accounts.read') && <NavLink to="/accounts" onClick={() => setDrawer(false)}><Settings2 size={19}/>账号与权限</NavLink>}</>}
       </nav>
       <div className="sidebar-footer"><span className="sidebar-mark"/><span>{config.data?.academicYear || '班级工作台'}</span></div>
     </aside>
@@ -139,21 +154,21 @@ export function App() {
       </header>
       <main id="main" className="main-content" tabIndex={-1}>
         <Feedback error={error} />
-        <Suspense fallback={<Feedback loading />}><Routes>
+        <Suspense fallback={<Feedback loading />}><Routes key={permissionKey}>
           <Route path="/" element={user ? guard(<Dashboard user={user} name={name}/>) : session.loading ? <Feedback loading /> : <PublicPage config={config} />} />
           <Route path="/login" element={user ? <Navigate to={user.mustChangePassword ? '/account' : '/'} replace /> : <Login authenticated={newUser => {
             setIdentity(newUser)
             const from = typeof location.state?.from === 'string' && /^\/(?!\/)/.test(location.state.from) ? location.state.from : '/'
             navigate(newUser.mustChangePassword ? '/account' : from, {replace: true})
           }} />} />
-          <Route path="/timetable" element={<TimetablePage manager={manager && !user?.mustChangePassword} />} />
+          <Route path="/timetable" element={<TimetablePage user={user?.mustChangePassword ? null : user} />} />
           <Route path="/homework/*" element={guard(user && <Tasks key="homework" user={user} kind="homework" />)} />
           <Route path="/affairs/*" element={guard(user && <Tasks key="affairs" user={user} kind="affairs" />)} />
-          <Route path="/resources" element={guard(<Resources manager={manager} />)} />
+          <Route path="/resources" element={guard(user && <Resources user={user} />)} />
           <Route path="/finance" element={guard(user && <Finance user={user} />)} />
-          <Route path="/class" element={guard(<ClassPage manager={manager} changed={() => {config.reload(); void refreshIdentity()}} />)} />
+          <Route path="/class" element={guard(user && <ClassPage user={user} changed={() => {config.reload(); void refreshIdentity()}} />)} />
           <Route path="/account" element={guard(user && <Account user={user} update={setIdentity} />)} />
-          <Route path="/accounts" element={guard(<Accounts changed={() => {void refreshIdentity()}} />, true)} />
+          <Route path="/accounts" element={guard(user && <Accounts user={user} changed={() => {void refreshIdentity()}} />, true)} />
           <Route path="*" element={<PageTitle label="404" title="找不到页面" detail="该地址可能已经变更。" actions={<Link className="btn primary" to="/">返回首页</Link>} />} />
         </Routes></Suspense>
       </main>
@@ -200,7 +215,10 @@ function Account({user, update}: {user: User; update: (user: User) => void}) {
   const navigate = useNavigate()
   return <div className="stack">
     <PageTitle label="设置" title="个人账号" detail="查看当前登录身份，管理账号密码。" />
-    <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
+    <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'super_admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'admin' ? <Badge>已授权 {effectivePermissions(user).length} 项操作</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
+    {user.role === 'admin' && <Panel title="我的管理权限" detail="由 Admin 按具体操作授权；需要调整时请联系 Admin。">
+      {effectivePermissions(user).length ? <div className="stack">{[...new Set(PERMISSIONS.filter(item => can(user, item.key)).map(item => item.group))].map(group => <div key={group}><strong>{group}</strong><p className="muted">{PERMISSIONS.filter(item => item.group === group && can(user, item.key)).map(item => item.label).join('、')}</p></div>)}</div> : <Empty>当前没有管理操作权限，可查看班级公开给成员的信息。</Empty>}
+    </Panel>}
     <PersonalAvatar user={user} update={update}/>
     <Panel title="修改密码" detail={user.mustChangePassword ? '首次登录或密码被重置后，请先更新密码。' : '请使用长度至少 8 位的新密码。'}>
       {saved && <p role="status" className="feedback">密码已更新。</p>}
@@ -229,8 +247,8 @@ function Dashboard({user, name}: {user: User; name: string}) {
   const lessons = useQuery<Timetable>('/public/timetable?date=' + today)
   const homework = useQuery<Task[]>('/homework')
   const affairs = useQuery<Task[]>('/affairs')
-  const manager = user.role !== 'student'
-  const member = user.role !== 'admin' || user.inClass
+  const manager = can(user, 'homework.create')
+  const member = isClassMember(user)
   const taskList = [...(homework.data || []), ...(affairs.data || [])]
   const tasks = taskList.filter(task => task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && !task.mySubmission)
     .sort((a, b) => (a.deadline || 'Z').localeCompare(b.deadline || 'Z'))
@@ -246,10 +264,10 @@ function Dashboard({user, name}: {user: User; name: string}) {
         {homework.data && affairs.data && (tasks.length ? <div className="rows">{tasks.map(task => <Link className="list-row" key={task.id} to={'/' + task.kind + '/' + task.id}><span className="row-icon"><ClipboardList size={18}/></span><span><strong>{task.title}</strong><small>{task.deadline ? timestamp(task.deadline) : '无截止时间'}</small></span><ArrowRight className="row-tail" size={17}/></Link>)}</div> : <Empty>没有待办事项。新发布的任务会在这里显示。</Empty>)}
       </Panel> : <Panel title="办理进度" detail="近期已发布的作业和事务">
         <Feedback error={homework.error || affairs.error} loading={homework.loading || affairs.loading} retry={() => {homework.reload(); affairs.reload()}}/>
-        {homework.data && affairs.data && (taskList.some(task => task.status === 'published' && task.requiresSubmission) ? <div className="rows">{taskList.filter(task => task.status === 'published' && task.requiresSubmission).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4).map(task => <Link className="list-row" key={task.id} to={'/' + task.kind + '/' + task.id}><span><strong>{task.title}</strong><small>已完成 {task.submittedCount} / {task.participantCount}</small></span><ArrowRight className="row-tail" size={17}/></Link>)}</div> : <Empty>已发布事项的提交进度会在这里显示。</Empty>)}
+        {homework.data && affairs.data && (taskList.some(task => task.status === 'published' && task.requiresSubmission) ? <div className="rows">{taskList.filter(task => task.status === 'published' && task.requiresSubmission).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4).map(task => <Link className="list-row" key={task.id} to={'/' + task.kind + '/' + task.id}><span><strong>{task.title}</strong><small>{task.submittedCount !== undefined && task.participantCount !== undefined ? `已完成 ${task.submittedCount} / ${task.participantCount}` : task.submittedCount !== undefined ? `已提交 ${task.submittedCount} 人` : task.participantCount !== undefined ? `参与 ${task.participantCount} 人` : '查看公告'}</small></span><ArrowRight className="row-tail" size={17}/></Link>)}</div> : <Empty>已发布事项的提交进度会在这里显示。</Empty>)}
       </Panel>}
     </div>
-    <Panel title="最新作业" detail="最近发布或更新的作业公告" actions={<Link className="text-link" to={manager ? '/homework?create=1' : '/homework'}>{manager ? '发布作业' : '全部作业'} <ArrowRight size={16}/></Link>}>
+    <Panel title="最新作业" detail="最近发布或更新的作业公告" actions={<Link className="text-link" to={manager ? '/homework?create=1' : '/homework'}>{manager ? '新增作业' : '全部作业'} <ArrowRight size={16}/></Link>}>
       <Feedback {...homework} retry={homework.reload} />
       {homework.data && (latest.length ? <div className="rows">{latest.map(task => <Link className="list-row" key={task.id} to={'/homework/' + task.id}><span className="row-icon violet"><BookOpen size={19}/></span><span><strong>{task.title}</strong><small>{task.course || '作业公告'} · {task.deadline ? timestamp(task.deadline) : '无截止时间'}</small></span><ArrowRight className="row-tail" size={17}/></Link>)}</div> : <Empty>暂无已发布的作业公告。</Empty>)}
     </Panel>

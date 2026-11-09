@@ -5,15 +5,18 @@ import { createStore } from '../server/db.ts';
 import { bindAttachments, cleanupFiles, createBundle, registerFiles, validateAttachments, type StorageAdapter } from '../server/files.ts';
 import { registerFinance } from '../server/finance.ts';
 import type { User } from '../server/common.ts';
+import { PERMISSION_KEYS } from '../shared/permissions.ts';
 const student:User={id:'s',name:'同学',username:'s',role:'student',inClass:true,active:true,financeManage:false,mustChangePassword:false,version:1};
 const manager:User={...student,id:'m',username:'m',role:'committee'};
 const date = '2026-01-01';
 async function setup(user: User | null, configured = false, overrides: Partial<StorageAdapter> = {}) {
   const db = createStore();
   for (const u of [student, manager, administrator]) {
-    db.run('INSERT INTO users(id,username,name,password_hash,role,created_at) VALUES(?,?,?,?,?,?)',
-      u.id, u.username, u.name, 'x', u.role, date);
+    db.run('INSERT INTO users(id,username,name,password_hash,role,finance_manage,in_class,must_change_password,permissions,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      u.id, u.username, u.name, 'x', u.role,Number(u.financeManage),Number(u.inClass),Number(u.mustChangePassword),JSON.stringify(u.permissions??[]),date);
   }
+  const persist=(u:User|null)=>{if(u)db.run('UPDATE users SET role=?,finance_manage=?,in_class=?,must_change_password=?,active=?,permissions=? WHERE id=?',u.role,Number(u.financeManage),Number(u.inClass),Number(u.mustChangePassword),Number(u.active),JSON.stringify(u.permissions??[]),u.id);};
+  persist(user);
   const storage: StorageAdapter = {
     configured,
     uploadUrl: async () => ({ url: 'https://upload.example', headers: {} }),
@@ -31,7 +34,7 @@ async function setup(user: User | null, configured = false, overrides: Partial<S
   registerFiles(app, db, storage);
   registerFinance(app, db);
   await app.ready();
-  return { app, db, storage, setUser: (next: User | null) => { user = next; } };
+  return { app, db, storage, setUser: (next: User | null) => { user = next; persist(next); } };
 }
 test('guest cannot request upload and configured status hides secrets',async()=>{const{app,db}=await setup(null);assert.equal((await app.inject({method:'POST',url:'/api/files/upload',payload:{}})).statusCode,401);await app.close();db.close()});
 test('missing COS rejects actual uploads and students cannot upload resources',async()=>{let s=await setup(manager);assert.equal((await s.app.inject({method:'POST',url:'/api/files/upload',payload:{name:'note.pdf',size:20,mime:'application/pdf',purpose:'resource'}})).statusCode,503);await s.app.close();s.db.close();s=await setup(student,true);assert.equal((await s.app.inject({method:'POST',url:'/api/files/upload',payload:{name:'note.pdf',size:20,mime:'application/pdf',purpose:'resource'}})).statusCode,403);await s.app.close();s.db.close()});
@@ -39,7 +42,7 @@ test('actual size is verified and foreign file cannot be attached',async()=>{con
 test('ready private receipt cannot be signed by a student',async()=>{const{app,db}=await setup(student,true);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)','receipt','r.pdf',20,'application/pdf','private/r','receipt','entry','m','ready','2026-01-01');assert.equal((await app.inject({method:'POST',url:'/api/files/receipt/download',payload:{}})).statusCode,403);await app.close();db.close()});
 
 const financeManager: User = { ...manager, financeManage: true };
-const administrator: User = { ...manager, id: 'a', username: 'a', name: '管理员', role: 'admin', inClass: false };
+const administrator: User = { ...manager, id: 'a', username: 'a', name: '管理员', role: 'admin', permissions: [...PERMISSION_KEYS], inClass: false };
 
 for (const entity of ['entry', 'payment'] as const) {
   test(`administrators without a finance flag upload, confirm and bind private receipts to a ${entity}`, async t => {

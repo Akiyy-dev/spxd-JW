@@ -1,6 +1,7 @@
-export type Role = 'admin' | 'committee' | 'student'
-export type User = {id: string; username: string; name: string; role: Role; inClass: boolean; avatarFileId?: string | null; financeManage: boolean; mustChangePassword: boolean; active: boolean; version: number}
-export const roleNames: Record<Role, string> = {admin: '管理员', committee: '班委', student: '学生'}
+import type {Role, Permission} from '../shared/permissions.ts'
+export type {Role, Permission} from '../shared/permissions.ts'
+export type User = {id: string; username: string; name: string; role: Role; permissions?:Permission[]; inClass: boolean; avatarFileId?: string | null; financeManage: boolean; mustChangePassword: boolean; active: boolean; version: number}
+export const roleNames: Record<Role, string> = {super_admin: 'Admin', admin: '管理员', committee: '班委', student: '学生'}
 
 export type Config = {name: string; subtitle: string; introduction: string; academicYear: string; semesterStart: string; semesterEnd: string; holidays: string[]; demo: boolean; photoFileId?: string}
 export type Member = {id: string; name: string; displayName?: string; role: Role; position: string; avatarFileId: string | null}
@@ -18,9 +19,9 @@ export type FieldType = 'text' | 'textarea' | 'select' | 'multiselect' | 'file'
 export type Field = {id: string; label: string; type: FieldType; required: boolean; options?: string[]}
 export type Submission = {id: string; taskId: string; userId: string; name: string; text: string; answers: Record<string, unknown>; attachments: string[]; createdAt: string; late: boolean; version: number}
 export type TaskKind = 'homework' | 'affairs'
-export type Task = {id: string; kind: TaskKind; title: string; course: string; description: string; deadline: string | null; allowLate: boolean; requiresSubmission: boolean; attachmentRequired: boolean; status: 'draft' | 'published' | 'archived'; fields: Field[]; attachments: string[]; version: number; createdAt: string; updatedAt: string; authorName: string; participantCount: number; submittedCount: number; mySubmission: Submission | null; myParticipantStatus: 'required' | 'excused' | null}
+export type Task = {id: string; kind: TaskKind; title: string; course: string; description: string; deadline: string | null; allowLate: boolean; requiresSubmission: boolean; attachmentRequired: boolean; status: 'draft' | 'published' | 'archived'; fields: Field[]; attachments: string[]; version: number; createdAt: string; updatedAt: string; authorName: string; hasSubmissions?: boolean; participantCount?: number; submittedCount?: number; mySubmission: Submission | null; myParticipantStatus: 'required' | 'excused' | null}
 export type Participant = {userId: string; name: string; status: 'required' | 'excused'; submitted: boolean}
-export type Resource = {id: string; title: string; description: string; category: string; url: string; attachments: string[]; pinned: boolean; status: 'published' | 'archived'; version: number; updatedAt: string; authorName: string}
+export type Resource = {id: string; title: string; description: string; category: string; url: string; attachments: string[]; pinned: boolean; status: 'draft' | 'published' | 'archived'; version: number; updatedAt: string; authorName: string}
 export type AttachmentPurpose = 'task-attachment' | 'submission' | 'resource' | 'receipt' | 'avatar' | 'class-photo'
 export type FileInfo = {id: string; name: string; size: number; mime: string}
 

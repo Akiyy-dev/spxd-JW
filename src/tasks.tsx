@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, BookOpen, ClipboardList, Clock3, History, Pencil, Plus, UsersRound } from 'lucide-react'
 import { api, datetimeInput, datetimeISO, timestamp, useQuery } from './api'
 import { createId } from './id'
+import { can, isClassMember } from '../shared/permissions'
 import { AsyncForm, Badge, checked, Empty, ExportButton, Feedback, Field, FileList, Modal, PageTitle, Panel, UploadFiles, val } from './ui'
 import type { ClassData, Field as TaskField, FieldType, Participant, Submission, Task, TaskKind, User } from './types'
 
@@ -10,18 +11,29 @@ const statusNames = {draft: '草稿', published: '已发布', archived: '已归�
 const fieldNames: Record<FieldType, string> = {text: '短文本', textarea: '长文本', select: '单选', multiselect: '多选', file: '附件'}
 const affairCategories = ['活动报名', '信息登记', '材料收集']
 
+function progressText(task:Task,user:User) {
+  const participants=can(user,`${task.kind}.participants.read`)?task.participantCount:undefined
+  const submissions=can(user,`${task.kind}.submissions.read`)?task.submittedCount:undefined
+  if(participants!==undefined&&submissions!==undefined)return `已完成 ${submissions} / ${participants} 人`
+  if(participants!==undefined)return `参与人数 ${participants} 人`
+  if(submissions!==undefined)return `已提交 ${submissions} 人`
+  return undefined
+}
+
 export function Tasks({kind, user}: {kind: TaskKind; user: User}) {
   const location = useLocation()
   const navigate = useNavigate()
   const base = '/' + kind
   const id = location.pathname.slice(base.length + 1).split('/')[0]
-  const manager = user.role !== 'student'
+  const manager = can(user, `${kind}.participants.read`) || can(user, `${kind}.submissions.read`) || can(user, `${kind}.edit`)
   const [history, setHistory] = useState(false)
+  const [notice, setNotice] = useState('')
   const [filter, setFilter] = useState('current')
   const [search, setSearch] = useState('')
   const list = useQuery<Task[]>(id ? null : base)
   const detail = useQuery<Task>(id ? base + '/' + id : null)
-  const editing = manager && new URLSearchParams(location.search).has(id ? 'edit' : 'create')
+  const canEdit = can(user, `${kind}.edit`) && (detail.data?.status !== 'published' || can(user, `${kind}.publish`))
+  const editing = (id ? canEdit : can(user, `${kind}.create`)) && new URLSearchParams(location.search).has(id ? 'edit' : 'create')
   const title = kind === 'homework' ? '作业公告' : '事务办理'
   const Icon = kind === 'homework' ? BookOpen : ClipboardList
   const filtered = list.data?.filter(task => {
@@ -31,9 +43,13 @@ export function Tasks({kind, user}: {kind: TaskKind; user: User}) {
   function saved(task: Task) {
     list.reload()
     detail.reload()
-    navigate(base + '/' + task.id)
+    if (task.status === 'draft' && !can(user, `${kind}.drafts.read`)) {
+      setNotice('草稿已保存。')
+      navigate(base)
+    } else navigate(base + '/' + task.id)
   }
   return <div className="stack">
+    {(notice || location.state?.notice) && <p className="feedback" role="status">{notice || location.state.notice}</p>}
     {id ? <>
       <Link className="text-link" to={base}><ArrowLeft size={17}/>返回{title}</Link>
       <Feedback {...detail} retry={detail.reload} />
@@ -41,20 +57,20 @@ export function Tasks({kind, user}: {kind: TaskKind; user: User}) {
     </> : <>
       <PageTitle label="班级工作台" title={title} detail={kind === 'homework' ? '查看作业要求、截止日期与提交记录。' : '办理报名、信息登记与班级材料收集。'} actions={<>
         <button className="btn" onClick={() => setHistory(true)}><History size={17}/>我的提交历史</button>
-        {manager && <Link className="btn primary" to={base + '?create=1'}><Plus size={17}/>{kind === 'homework' ? '新建作业' : '新建事务'}</Link>}
+        {can(user, `${kind}.create`) && <Link className="btn primary" to={base + '?create=1'}><Plus size={17}/>{kind === 'homework' ? '新建作业' : '新建事务'}</Link>}
       </>}/>
       <section className="panel">
-        <div className="toolbar"><div className="segments" aria-label="按状态筛选">{[['current', '已发布'], ['archived', '已归档'], ...(manager ? [['draft', '草稿'], ['all', '全部']] : [])].map(([key, label]) => <button key={key} aria-pressed={filter === key} onClick={() => setFilter(key)}>{label}</button>)}</div>
+        <div className="toolbar"><div className="segments" aria-label="按状态筛选">{[['current', '已发布'], ['archived', '已归档'], ...(can(user, `${kind}.drafts.read`) ? [['draft', '草稿'], ['all', '全部']] : [])].map(([key, label]) => <button key={key} aria-pressed={filter === key} onClick={() => setFilter(key)}>{label}</button>)}</div>
           <input type="search" aria-label={'搜索' + title} placeholder="按标题或关键词搜索" value={search} onChange={event => setSearch(event.target.value)}/>
         </div>
         <Feedback {...list} retry={list.reload} />
         {filtered && (filtered.length ? <div className="rows">{filtered.map(task => <Link className="list-row" key={task.id} to={base + '/' + task.id}><span className={'row-icon ' + (kind === 'homework' ? 'violet' : 'sky')}><Icon size={19}/></span>
           <span><strong>{task.title}</strong><small>{[task.course, task.deadline ? '截止 ' + timestamp(task.deadline) : '无截止时间'].filter(Boolean).join(' · ')}</small></span>
-          <span className="row-tail badge-group">{manager && task.requiresSubmission && <Badge>{task.submittedCount}/{task.participantCount} 已完成</Badge>}<TaskStatus task={task} manager={manager}/></span><ArrowRight size={17} className="list-arrow"/>
+          <span className="row-tail badge-group">{task.requiresSubmission && progressText(task,user) && <Badge>{progressText(task,user)}</Badge>}<TaskStatus task={task} manager={manager}/></span><ArrowRight size={17} className="list-arrow"/>
         </Link>)}</div> : <Empty>{search ? '没有符合搜索条件的事项。' : '当前筛选下没有事项。'}</Empty>)}
       </section>
     </>}
-    {editing && (!id || detail.data) && <TaskEditor task={detail.data} base={base} kind={kind} close={() => navigate(location.pathname)} saved={saved} />}
+    {editing && (!id || detail.data) && <TaskEditor task={detail.data} user={user} base={base} kind={kind} close={() => navigate(location.pathname)} saved={saved} />}
     {history && <OwnHistory close={() => setHistory(false)} />}
   </div>
 }
@@ -70,13 +86,18 @@ function TaskStatus({task, manager}: {task: Task; manager: boolean}) {
 }
 
 function TaskDetail({task, user, base, reload}: {task: Task; user: User; base: string; reload: () => void}) {
-  const manager = user.role !== 'student'
+  const navigate = useNavigate()
+  const kind = task.kind
+  const readParticipants = can(user, `${kind}.participants.read`)
+  const readSubmissions = can(user, `${kind}.submissions.read`)
+  const manager = readParticipants || readSubmissions || can(user, `${kind}.edit`)
+  const canEdit = can(user, `${kind}.edit`) && (task.status !== 'published' || can(user, `${kind}.publish`))
   const path = base + '/' + task.id
   const [view, setView] = useState<'participants' | 'submissions' | 'submit' | 'history' | 'lifecycle'>()
   const [lifecycle, setLifecycle] = useState<Task['status']>('published')
   const [notice, setNotice] = useState('')
   const overdue = task.deadline && Date.parse(task.deadline) < Date.now()
-  const canSubmit = user.inClass && task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && (!overdue || task.allowLate)
+  const canSubmit = isClassMember(user) && task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && (!overdue || task.allowLate)
   const close = () => setView(undefined)
   function saved(message: string) {
     setNotice(message)
@@ -85,11 +106,11 @@ function TaskDetail({task, user, base, reload}: {task: Task; user: User; base: s
   }
   const lifecycleButton = (status: Task['status'], label: string) => <button className="btn" onClick={() => {setLifecycle(status); setView('lifecycle')}}>{label}</button>
   return <>
-    <PageTitle label={task.course || (task.kind === 'homework' ? '作业公告' : '班级事务')} title={task.title} detail={`${task.authorName} · 更新于 ${timestamp(task.updatedAt)}`} actions={manager && <>
-      <Link className="btn" to={path + '?edit=1'}><Pencil size={16}/>编辑</Link>
-      {task.status !== 'published' && lifecycleButton('published', task.status === 'archived' ? '恢复发布' : '发布')}
-      {task.status === 'published' && lifecycleButton('draft', '撤回')}
-      {task.status === 'published' && lifecycleButton('archived', '归档')}
+    <PageTitle label={task.course || (task.kind === 'homework' ? '作业公告' : '班级事务')} title={task.title} detail={`${task.authorName} · 更新于 ${timestamp(task.updatedAt)}`} actions={<>
+      {canEdit && <Link className="btn" to={path + '?edit=1'}><Pencil size={16}/>编辑</Link>}
+      {task.status !== 'published' && can(user, `${kind}.publish`) && lifecycleButton('published', task.status === 'archived' ? '恢复发布' : '发布')}
+      {task.status === 'published' && can(user, `${kind}.withdraw`) && lifecycleButton('draft', '撤回')}
+      {task.status === 'published' && can(user, `${kind}.archive`) && lifecycleButton('archived', '归档')}
     </>} />
     {notice && <p className="feedback" role="status">{notice}</p>}
     <Panel title="事项说明">
@@ -97,35 +118,39 @@ function TaskDetail({task, user, base, reload}: {task: Task; user: User; base: s
       <p className="prose">{task.description || '暂无附加说明。'}</p>
       <FileList ids={task.attachments} />
     </Panel>
-    {(user.inClass || task.mySubmission) && task.requiresSubmission && <Panel title="我的提交" actions={canSubmit && <button className="btn primary" onClick={() => setView('submit')}>{task.mySubmission ? '更新提交' : '填写并提交'}</button>}>
+    {(isClassMember(user) || task.mySubmission) && task.requiresSubmission && <Panel title="我的提交" actions={canSubmit && <button className="btn primary" onClick={() => setView('submit')}>{task.mySubmission ? '更新提交' : '填写并提交'}</button>}>
       {task.mySubmission ? <SubmissionCard submission={task.mySubmission} fields={task.fields} /> : <p className="muted">{task.myParticipantStatus === 'excused' ? '你已免交此事项。' : task.myParticipantStatus === 'required' ? '还没有提交记录。' : '你不在当前参与名单中。'}</p>}
       {task.mySubmission && <button className="btn quiet" onClick={() => setView('history')}><History size={17}/>我的历史</button>}
     </Panel>}
-    {manager && task.requiresSubmission && <Panel title="办理进度" detail={`已完成 ${task.submittedCount} / ${task.participantCount} 人`}>
-      <progress max={Math.max(1, task.participantCount)} value={task.submittedCount} aria-label="提交完成进度" />
-      <div className="actions"><button className="btn" onClick={() => setView('participants')}><UsersRound size={17}/>参与名单</button>
-        <button className="btn" onClick={() => setView('submissions')}>查看提交</button><ExportButton path={path + '/export'}/><ExportButton path={path + '/export-files'} label="打包提交附件" body={{}}/></div>
+    {(readParticipants || readSubmissions) && task.requiresSubmission && <Panel title="办理进度" detail={progressText(task,user)}>
+      {readParticipants && readSubmissions && task.participantCount!==undefined && task.submittedCount!==undefined && <progress max={Math.max(1, task.participantCount)} value={task.submittedCount} aria-label="提交完成进度" />}
+      <div className="actions">{readParticipants && <button className="btn" onClick={() => setView('participants')}><UsersRound size={17}/>参与名单</button>}
+        {readSubmissions && <button className="btn" onClick={() => setView('submissions')}>查看提交</button>}{can(user, `${kind}.export`) && <ExportButton path={path + '/export'}/>}{can(user, `${kind}.exportFiles`) && <ExportButton path={path + '/export-files'} label="打包提交附件" body={{}}/>}</div>
     </Panel>}
-    {view === 'submit' && <SubmissionEditor task={task} path={path} close={close} saved={() => saved('提交已保存。')} />}
-    {view === 'participants' && <ParticipantEditor task={task} path={path} close={close} saved={() => saved('参与名单已更新。')} />}
-    {view === 'submissions' && <TaskSubmissions task={task} path={path} close={close} />}
+    {view === 'submit' && canSubmit && <SubmissionEditor task={task} path={path} close={close} saved={() => saved('提交已保存。')} />}
+    {view === 'participants' && readParticipants && <ParticipantEditor task={task} path={path} canManage={can(user, `${kind}.participants.manage`)} close={close} saved={() => saved('参与名单已更新。')} />}
+    {view === 'submissions' && readSubmissions && <TaskSubmissions task={task} path={path} canExportFiles={can(user, `${kind}.exportFiles`)} close={close} />}
     {view === 'history' && <OwnHistory taskId={task.id} close={close} />}
-    {view === 'lifecycle' && <Modal title={lifecycle === 'draft' ? '撤回发布' : statusNames[lifecycle]} close={close}>
-      <AsyncForm cancel={close} button="确认" submit={async () => {await api(path, 'PUT', {status: lifecycle, version: task.version}); saved('事项状态已更新。')}}>
+    {view === 'lifecycle' && can(user, `${kind}.${lifecycle === 'published' ? 'publish' : lifecycle === 'draft' ? 'withdraw' : 'archive'}`) && <Modal title={lifecycle === 'draft' ? '撤回发布' : statusNames[lifecycle]} close={close}>
+      <AsyncForm cancel={close} button="确认" submit={async () => {
+        await api(path, 'PUT', {status: lifecycle, version: task.version})
+        if (lifecycle === 'draft' && !can(user, `${kind}.drafts.read`)) navigate(base, {state:{notice:'事项已撤回。'}})
+        else saved('事项状态已更新。')
+      }}>
         <p>{lifecycle === 'published' ? '发布后，班级成员可查看事项及要求。' : lifecycle === 'archived' ? '归档后，成员可查阅此事项及历史提交。' : '撤回后，事项会移至草稿，历史提交会保留。'}</p>
       </AsyncForm>
     </Modal>}
   </>
 }
 
-function TaskEditor({task, kind, base, close, saved}: {task?: Task; kind: TaskKind; base: string; close: () => void; saved: (task: Task) => void}) {
+function TaskEditor({task, user, kind, base, close, saved}: {task?: Task; user: User; kind: TaskKind; base: string; close: () => void; saved: (task: Task) => void}) {
   const [fields, setFields] = useState<TaskField[]>(task?.fields || [])
   const [requires, setRequires] = useState(task?.requiresSubmission ?? true)
   const [attachments, setAttachments] = useState(task?.attachments || [])
   const [options, setOptions] = useState(() => Object.fromEntries((task?.fields || []).map(field => [field.id, field.options?.join('\n') || ''])))
   const [status, setStatus] = useState(task?.status || 'draft')
-  const previous = useQuery<Submission[]>(task && kind === 'affairs' ? base + '/' + task.id + '/submissions?history=1' : null)
-  const locked = !!task && kind === 'affairs' && (!previous.data || previous.data.length > 0)
+  const locked = !!task && kind === 'affairs' && task.hasSubmissions !== false
+  const statusAllowed = (status: string) => status === (task?.status || 'draft') || (status === 'published' ? can(user, `${kind}.publish`) : !!task && (status === 'draft' ? task.status === 'published' && can(user, `${kind}.withdraw`) : task.status === 'published' && can(user, `${kind}.archive`)))
   return <Modal title={task ? '编辑事项' : kind === 'homework' ? '新建作业' : '新建事务'} close={close} wide>
     <AsyncForm cancel={close} button={status === 'draft' ? '保存草稿' : '保存事项'} submit={async data => {
       const enteredDeadline = val(data, 'deadline')
@@ -142,18 +167,17 @@ function TaskEditor({task, kind, base, close, saved}: {task?: Task; kind: TaskKi
       <div className="form-grid">
         <Field label="标题" wide><input name="title" required maxLength={160} defaultValue={task?.title}/></Field>
         {kind === 'homework' ? <Field label="课程"><input name="course" maxLength={80} defaultValue={task?.course} /></Field> : <Field label="事务类别"><select name="course" defaultValue={task?.course || affairCategories[0]}>{task?.course && !affairCategories.includes(task.course) && <option>{task.course}</option>}{affairCategories.map(category => <option key={category}>{category}</option>)}</select></Field>}
-        <Field label="状态"><select value={status} onChange={event => setStatus(event.target.value as Task['status'])}>{Object.entries(statusNames).filter(([key]) => task || key !== 'archived').map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
+        <Field label="状态"><select value={status} onChange={event => setStatus(event.target.value as Task['status'])}>{Object.entries(statusNames).filter(([key]) => statusAllowed(key)).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
         <Field label="要求或说明" wide><textarea name="description" rows={5} defaultValue={task?.description}/></Field>
         <Field label="截止时间（北京时间）" hint="留空表示无截止时间。"><input type="datetime-local" name="deadline" defaultValue={datetimeInput(task?.deadline)} /></Field>
         <div className="checks"><label><input type="checkbox" checked={requires} onChange={event => setRequires(event.target.checked)}/>需要提交</label>
           {requires && <label><input type="checkbox" name="allowLate" defaultChecked={task?.allowLate}/>允许补交</label>}
           {kind === 'homework' && requires && <label><input type="checkbox" name="attachmentRequired" defaultChecked={task?.attachmentRequired}/>提交附件必填</label>}
         </div>
-        <UploadFiles ids={attachments} setIds={setAttachments} purpose="task-attachment" entityId={task?.id} label="公告附件" />
+        <UploadFiles ids={attachments} setIds={setAttachments} purpose="task-attachment" context={kind} entityId={task?.id} label="公告附件" />
         {kind === 'affairs' && requires && <section className="wide editor-section">
           <h3>提交表单</h3>
-          <Feedback {...previous} retry={previous.reload}/>
-          {locked && previous.data && <p className="muted">已有提交记录，可新增选填字段。</p>}
+          {locked && <p className="muted">已有提交记录，可新增选填字段。</p>}
           {fields.map((field, index) => {
             const existing = locked && task?.fields.some(item => item.id === field.id)
             const patch = (changes: Partial<TaskField>) => setFields(fields.map(item => item.id === field.id ? {...item, ...changes} : item))
@@ -203,13 +227,14 @@ function SubmissionEditor({task, path, close, saved}: {task: Task; path: string;
   </Modal>
 }
 
-function ParticipantEditor({task, path, close, saved}: {task: Task; path: string; close: () => void; saved: () => void}) {
-  const roster = useQuery<ClassData>('/class')
+function ParticipantEditor({task, path, canManage, close, saved}: {task: Task; path: string; canManage: boolean; close: () => void; saved: () => void}) {
+  const roster = useQuery<ClassData>(canManage ? '/class' : null)
   const participants = useQuery<Participant[]>(path + '/participants')
   const members = roster.data?.members
   return <Modal title="参与名单与进度" close={close}>
     <Feedback {...roster} retry={roster.reload}/><Feedback {...participants} retry={participants.reload}/>
-    {members && participants.data && <AsyncForm cancel={close} button="更新名单" submit={async data => {
+    {!canManage && participants.data && <div className="rows">{participants.data.map(item => <div className="list-row" key={item.userId}><strong>{item.name}</strong><Badge tone={item.submitted ? 'good' : ''}>{item.status === 'excused' ? '免交' : item.submitted ? '已提交' : '未提交'}</Badge></div>)}</div>}
+    {canManage && members && participants.data && <AsyncForm cancel={close} button="更新名单" submit={async data => {
       await api(path + '/participants', 'PUT', {version: task.version, userIds: data.getAll('userId')})
       saved()
     }}>
@@ -235,7 +260,7 @@ function SubmissionCard({submission, fields = []}: {submission: Submission; fiel
   </article>
 }
 
-function TaskSubmissions({task, path, close}: {task: Task; path: string; close: () => void}) {
+function TaskSubmissions({task, path, canExportFiles, close}: {task: Task; path: string; canExportFiles: boolean; close: () => void}) {
   const [all, setAll] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const submissions = useQuery<HistoryItem[]>(path + '/submissions' + (all ? '?history=1' : ''))
@@ -243,11 +268,11 @@ function TaskSubmissions({task, path, close}: {task: Task; path: string; close: 
   return <Modal title="成员提交记录" close={close} wide>
     <div className="stack"><div className="split">
       <label className="check"><input type="checkbox" checked={all} onChange={event => {setAll(event.target.checked); setSelected([])}}/>包含历史版本</label>
-      {!all && downloadable.length > 0 && <ExportButton path={path + '/export-files'} label={`打包所选 ${downloadable.length} 人的附件`} body={{userIds: downloadable}}/>}
+      {canExportFiles && !all && downloadable.length > 0 && <ExportButton path={path + '/export-files'} label={`打包所选 ${downloadable.length} 人的附件`} body={{userIds: downloadable}}/>}
     </div>
       <Feedback {...submissions} retry={submissions.reload}/>
       {submissions.data && (submissions.data.length ? submissions.data.map(submission => <div key={submission.id}>
-        {!all && submission.attachments.length > 0 && <label className="check"><input type="checkbox" checked={selected.includes(submission.userId)} onChange={event => {
+        {canExportFiles && !all && submission.attachments.length > 0 && <label className="check"><input type="checkbox" checked={selected.includes(submission.userId)} onChange={event => {
           setSelected(current => event.target.checked ? [...current, submission.userId] : current.filter(id => id !== submission.userId))
         }}/>选择 {submission.name} 的附件</label>}
         <SubmissionCard submission={submission} fields={submission.fields || submission.schema || task.fields}/>

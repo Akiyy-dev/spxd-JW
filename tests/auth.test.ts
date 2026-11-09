@@ -38,7 +38,7 @@ test('cross-origin login, last-admin demotion and a partial roster import are re
   const db = createStore();
   const app = await buildApp({db});
   t.after(async () => { await app.close(); db.close(); });
-  const admin = createUser(db, {username:'admin',name:'管理员',role:'admin',password,mustChangePassword:false});
+  const admin = createUser(db, {username:'admin',name:'管理员',role:'super_admin',password,mustChangePassword:false});
   assert.equal((await app.inject({method:'POST',url:'/api/auth/login',headers:{origin:'https://untrusted.test'},
     payload:{username:'admin',password}})).statusCode, 403);
   const {cookies:[cookie]} = await login(app, 'admin');

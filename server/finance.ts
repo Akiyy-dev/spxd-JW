@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { canManageFinance, conflict, dateSchema, HttpError, json, now, parse, requireFinance, requireUser, uid, versionSchema, type User } from './common.ts';
+import { conflict, dateSchema, HttpError, json, now, parse, requirePermission, requireUser, uid, versionSchema, type User } from './common.ts';
+import { can, isClassMember, type PermissionUser } from '../shared/permissions.ts';
 import type { Store } from './db.ts';
 import { bindAttachments, createExport, validateAttachments } from './files.ts';
 
@@ -82,13 +83,8 @@ const getPayment = (db: Store, id: string) => paymentView(found(db.get<PaymentRo
 const getFee = (db: Store, id: string) => feeView(found(db.get<FeeRow>(feesSql + ' WHERE id=?', id)));
 const linkedEntry = (db: Store, paymentId: string) => entryView(found(db.get<EntryRow>(entriesSql + ' WHERE e.payment_id=?', paymentId)));
 const getId = (req: FastifyRequest) => parse(z.object({ id: idSchema }), req.params).id;
-const canViewAll = canManageFinance;
-
-function requireFinanceReader(req: FastifyRequest) {
-  const user = requireUser(req);
-  if (!canViewAll(user)) throw new HttpError(403, '需要完整班费查阅权限');
-  return user;
-}
+const financeWrites = ['finance.entries.create', 'finance.entries.edit', 'finance.entries.void',
+  'finance.fees.create', 'finance.fees.edit', 'finance.payments.create', 'finance.payments.edit', 'finance.payments.void'] as const;
 
 function fingerprint(value: unknown) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -131,7 +127,8 @@ function assertOpening(db: Store, type: Entry['type'], id = '') {
 }
 
 function assertMember(db: Store, id: string) {
-  if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND (role IN ('student','committee') OR in_class=1)", id)) {
+  const member = db.get<PermissionUser>('SELECT role,in_class AS inClass FROM users WHERE id=? AND active=1', id);
+  if (!member || !isClassMember(member)) {
     throw new HttpError(400, '缴费对象必须是启用且纳入班级名单的成员');
   }
 }
@@ -164,7 +161,7 @@ function assertSafeTotals(db: Store) {
 }
 
 function readFinance(db: Store, user: User) {
-  const full = canViewAll(user);
+  const full = can(user, 'finance.read');
   const ledger = db.all<EntryRow>(entriesSql + ' ORDER BY e.date DESC,e.created_at DESC,e.id DESC').map(entryView);
   const paymentFilter = full ? [] : [user.id];
   const payments = db.all<PaymentRow>(paymentsSql + (full ? '' : ' WHERE p.user_id=?')
@@ -180,7 +177,7 @@ function readFinance(db: Store, user: User) {
     ...(entry.paymentId && { paymentId: null, category: '班费收入', description: '班费收入', authorName: '' }),
     receiptIds: entry.publicReceipt ? entry.receiptIds : [],
   }));
-  return { ...ledgerTotals(ledger), entries, fees, payments, canManage: canManageFinance(user), canViewAll: full };
+  return { ...ledgerTotals(ledger), entries, fees, payments, canManage: financeWrites.some(permission => can(user, permission)), canViewAll: full };
 }
 
 function insertEntry(db: Store, user: User, id: string, fields: z.infer<typeof entryFields>, key: string | null, paymentId: string | null) {
@@ -199,12 +196,13 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   app.get(base, req => readFinance(db, requireUser(req)));
 
   app.get(base + '/members', req => {
-    requireFinanceReader(req);
-    return db.all("SELECT id,name FROM users WHERE active=1 AND (role IN ('student','committee') OR in_class=1) ORDER BY name,id");
+    requirePermission(req, 'finance.read');
+    return db.all<PermissionUser & { id: string; name: string }>('SELECT id,name,role,in_class AS inClass FROM users WHERE active=1 ORDER BY name,id')
+      .filter(isClassMember).map(({ id, name }) => ({ id, name }));
   });
 
   app.get(base + '/history', req => {
-    requireFinanceReader(req);
+    requirePermission(req, 'finance.history');
     const rows = db.all<{ id: string; entityType: EntityType; entityId: string; data: string; version: number; reason: string; actorId: string; actorName: string; createdAt: string }>(
       `SELECT v.id,v.entity_type AS entityType,v.entity_id AS entityId,v.data,v.version,v.reason,
         v.actor_id AS actorId,u.name AS actorName,v.created_at AS createdAt FROM finance_versions v
@@ -217,7 +215,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/entries', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.entries.create');
     const input = parse(createEntry, req.body);
     const request = fingerprint(input);
     return db.transaction(() => {
@@ -225,7 +223,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
       if (existing) return replayCreate(db, 'entry', existing.authorId, user, entryView(existing), request);
       const id = uid();
       assertOpening(db, input.type);
-      validateAttachments(db, user, input.receiptIds, 'receipt', id);
+      validateAttachments(db, user, input.receiptIds, 'receipt', id, 'finance.entries.create');
       insertEntry(db, user, id, input, input.idempotencyKey, null);
       bindAttachments(db, input.receiptIds, id);
       assertSafeTotals(db);
@@ -235,7 +233,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.put(base + '/entries/:id', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.entries.edit');
     const id = getId(req);
     const { version, reason, ...changes } = parse(updateEntry, req.body);
     const request = fingerprint({ action: 'update', reason, changes });
@@ -246,7 +244,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
       assertManual(current);
       const next = { ...current, ...changes };
       assertOpening(db, next.type, id);
-      validateAttachments(db, user, next.receiptIds, 'receipt', id);
+      validateAttachments(db, user, next.receiptIds, 'receipt', id, 'finance.entries.edit');
       saveRevision(db, user, 'entry', current, 'update', reason, request);
       saveEntry(db, next);
       bindAttachments(db, next.receiptIds, id);
@@ -256,7 +254,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/entries/:id/void', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.entries.void');
     const id = getId(req);
     const { version, reason } = parse(voidFields, req.body);
     const request = fingerprint({ action: 'void', reason });
@@ -273,7 +271,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/fees', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.fees.create');
     const input = parse(feeFields, req.body);
     return db.transaction(() => {
       for (const id of input.userIds) assertMember(db, id);
@@ -286,7 +284,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.put(base + '/fees/:id', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.fees.edit');
     const id = getId(req);
     const { version, ...input } = parse(updateFee, req.body);
     const request = fingerprint(input);
@@ -305,7 +303,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/payments', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.payments.create');
     const input = parse(createPayment, req.body);
     const request = fingerprint(input);
     return db.transaction(() => {
@@ -313,7 +311,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
       if (existing) return replayCreate(db, 'payment', existing.authorId, user, paymentView(existing), request);
       assertPayer(db, input.feeId, input.userId);
       const id = uid();
-      validateAttachments(db, user, input.receiptIds, 'receipt', id);
+      validateAttachments(db, user, input.receiptIds, 'receipt', id, 'finance.payments.create');
       db.run(`INSERT INTO payments(id,fee_id,user_id,amount,date,description,receipt_ids,idempotency_key,author_id,created_at)
         VALUES(?,?,?,?,?,?,?,?,?,?)`, id, input.feeId, input.userId, input.amount, input.date, input.description,
         JSON.stringify(input.receiptIds), input.idempotencyKey, user.id, now());
@@ -326,7 +324,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.put(base + '/payments/:id', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.payments.edit');
     const id = getId(req);
     const { version, reason, ...changes } = parse(updatePayment, req.body);
     const request = fingerprint({ action: 'update', reason, changes });
@@ -338,7 +336,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
       const entry = linkedEntry(db, id);
       const next = { ...current, ...changes };
       if (next.feeId !== current.feeId || next.userId !== current.userId) assertPayer(db, next.feeId, next.userId);
-      validateAttachments(db, user, next.receiptIds, 'receipt', id);
+      validateAttachments(db, user, next.receiptIds, 'receipt', id, 'finance.payments.edit');
       saveRevision(db, user, 'payment', current, 'update', reason, request);
       saveRevision(db, user, 'entry', entry, 'update', reason);
       db.run('UPDATE payments SET fee_id=?,user_id=?,amount=?,date=?,description=?,receipt_ids=?,version=version+1 WHERE id=?',
@@ -352,7 +350,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/payments/:id/void', req => {
-    const user = requireFinance(req);
+    const user = requirePermission(req, 'finance.payments.void');
     const id = getId(req);
     const { version, reason } = parse(voidFields, req.body);
     const request = fingerprint({ action: 'void', reason });
@@ -372,7 +370,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
   });
 
   app.post(base + '/export', async req => {
-    const user = requireFinanceReader(req);
+    const user = requirePermission(req, 'finance.export');
     const finance = readFinance(db, user);
     const names = new Map(db.all<{ id: string; name: string }>('SELECT id,name FROM users').map(row => [row.id, row.name]));
     const feeNames = new Map(finance.fees.map(fee => [fee.id, fee.title]));
@@ -404,6 +402,6 @@ export function registerFinance(app: FastifyInstance, db: Store) {
       for (const column of sheet.columns) column.width = 22;
     }
     const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-    return createExport(db, user, '班费台账.xlsx', buffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', { kind: 'finance' });
+    return createExport(db, user, '班费台账.xlsx', buffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', { kind: 'finance', permission: 'finance.export' }, [], req);
   });
 }

@@ -10,7 +10,7 @@ async function fixture(t: TestContext, storage?: import('../server/files.ts').St
   t.after(async () => { await app.close(); db.close(); });
   const password = 'Initial-Pass2026!';
   async function account(username: string, role: 'admin'|'student'|'committee') {
-    const user = createUser(db, {username,name:username,role,password,mustChangePassword:false});
+    const user = createUser(db, {username,name:username,role:role === 'admin' ? 'super_admin' : role,password,mustChangePassword:false});
     const response = await app.inject({method:'POST',url:'/api/auth/login',payload:{username,password}});
     assert.equal(response.statusCode, 200);
     const cookie = response.cookies[0];

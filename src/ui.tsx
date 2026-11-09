@@ -135,7 +135,7 @@ export function FileList({ids}: {ids?: string[]}) {
   return ids?.length ? <div className="files">{ids.map(id => <FileLink key={id} id={id}/>)}</div> : null
 }
 
-export function UploadFiles({ids, setIds, purpose, entityId, label = '附件', max = 5, required = false}: {ids: string[]; setIds: (ids: string[]) => void; purpose: AttachmentPurpose; entityId?: string; label?: string; max?: number; required?: boolean}) {
+export function UploadFiles({ids, setIds, purpose, entityId, context, label = '附件', max = 5, required = false}: {ids: string[]; setIds: (ids: string[]) => void; purpose: AttachmentPurpose; entityId?: string; context?: string; label?: string; max?: number; required?: boolean}) {
   const maxMiB = purpose === 'avatar' ? 5 : 20
   const status = useQuery<{cosConfigured: boolean}>('/status')
   const [busy, setBusy] = useState(false)
@@ -149,7 +149,7 @@ export function UploadFiles({ids, setIds, purpose, entityId, label = '附件', m
       if (files.length > max - ids.length) throw new Error(`还可上传 ${max - ids.length} 个文件。`)
       for (const file of Array.from(files)) {
         if (file.size === 0 || file.size > maxMiB * 1024 * 1024) throw new Error(`请选择非空且不超过 ${maxMiB} MiB 的文件。`)
-        const {fileId, url, headers} = await api<{fileId: string; url: string; headers: Record<string, string>}>('/files/upload', 'POST', {name: file.name, size: file.size, mime: file.type || 'application/octet-stream', purpose, entityId})
+        const {fileId, url, headers} = await api<{fileId: string; url: string; headers: Record<string, string>}>('/files/upload', 'POST', {name: file.name, size: file.size, mime: file.type || 'application/octet-stream', purpose, entityId, context})
         const put = await fetch(url, {method: 'PUT', headers, body: file})
         if (!put.ok) throw new Error('附件上传失败，请重试。')
         await api(`/files/${fileId}/confirm`, 'POST')

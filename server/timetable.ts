@@ -1,7 +1,7 @@
 import type {FastifyInstance} from 'fastify';
 import type {Store} from './db.ts';
 import {z} from 'zod';
-import {conflict,dateSchema,HttpError,json,now,parse,requireManager,shanghaiDate,uid} from './common.ts';
+import {conflict,dateSchema,HttpError,json,now,parse,requirePermission,shanghaiDate,uid} from './common.ts';
 import {defaultConfig} from './catalog.ts';
 
 const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
@@ -88,13 +88,13 @@ export function getTimetable(db:Store,date=shanghaiDate()) {
 export function registerTimetable(app:FastifyInstance,db:Store) {
   app.get('/api/public/timetable',async req=>{const q=parse(z.object({date:dateSchema.optional()}),req.query);return getTimetable(db,q.date)});
   app.get('/api/timetable/templates',async req=>{
-    requireManager(req);return db.transaction(()=>{
+    requirePermission(req,'timetable.templates.read');return db.transaction(()=>{
       const state=selection(db);
       return {templates:db.all<TemplateRow>('SELECT * FROM timetable_templates ORDER BY updated_at DESC,id').map(describeTemplate),activeTemplateId:state.templateId,selectionVersion:state.version};
     });
   });
   app.put('/api/timetable',async req=>{
-    const u=requireManager(req),v=parse(templateSchema.extend(guardSchema.shape),req.body);
+    const u=requirePermission(req,'timetable.current.edit'),v=parse(templateSchema.extend(guardSchema.shape),req.body);
     return db.transaction(()=>{
       const old=checkCurrent(db,v),saved=saveTemplate(db,old,v);
       if(!old)db.setSetting('timetable.selection',{templateId:saved.id,version:v.selectionVersion+1});
@@ -102,21 +102,22 @@ export function registerTimetable(app:FastifyInstance,db:Store) {
     });
   });
   app.post('/api/timetable/templates',async req=>{
-    const u=requireManager(req),v=parse(templateSchema,req.body);
+    const u=requirePermission(req,'timetable.templates.create'),v=parse(templateSchema,req.body);
     return db.transaction(()=>{
       checkSelection(db,v.selectionVersion);const saved=saveTemplate(db,null,v);
       db.audit(u.id,'timetable.template.create',saved.id,v);return describeTemplate(saved);
     });
   });
   app.put<{Params:{id:string}}>('/api/timetable/templates/:id',async req=>{
-    const u=requireManager(req),v=parse(editSchema,req.body);
+    const u=requirePermission(req,'timetable.templates.edit'),v=parse(editSchema,req.body);
     return db.transaction(()=>{
-      checkSelection(db,v.selectionVersion);const old=getTemplate(db,req.params.id);conflict(old.version,v.version);
+      const state=checkSelection(db,v.selectionVersion);const old=getTemplate(db,req.params.id);conflict(old.version,v.version);
+      if(state.templateId===old.id)requirePermission(req,'timetable.current.edit');
       const saved=saveTemplate(db,old,v);db.audit(u.id,'timetable.template.save',saved.id,v);return describeTemplate(saved);
     });
   });
   app.post<{Params:{id:string}}>('/api/timetable/templates/:id/apply',async req=>{
-    const u=requireManager(req),v=parse(selectionSchema.extend({version:z.number().int().positive()}),req.body);
+    const u=requirePermission(req,'timetable.templates.apply'),v=parse(selectionSchema.extend({version:z.number().int().positive()}),req.body);
     return db.transaction(()=>{
       checkSelection(db,v.selectionVersion);const row=getTemplate(db,req.params.id);conflict(row.version,v.version);
       const template=describeTemplate(row);validateCourses(template.periods,template.courses);validateExceptionDates(db,row.id);
@@ -125,7 +126,7 @@ export function registerTimetable(app:FastifyInstance,db:Store) {
     });
   });
   app.post('/api/timetable/exceptions',async req=>{
-    const u=requireManager(req);
+    const u=requirePermission(req,'timetable.exceptions.write');
     const v=parse(guardSchema.extend({date:dateSchema,courseId:z.string().min(1),action:z.enum(['cancel','replace']),course:courseSchema.optional()}),req.body);
     if(v.action==='replace'&&!v.course)throw new HttpError(400,'请填写调整后的课程');
     const day=new Date(`${v.date}T12:00:00+08:00`).getUTCDay()||7;
@@ -140,7 +141,7 @@ export function registerTimetable(app:FastifyInstance,db:Store) {
     });
   });
   app.delete<{Params:{id:string}}>('/api/timetable/exceptions/:id',async req=>{
-    const u=requireManager(req),v=parse(guardSchema,req.body);
+    const u=requirePermission(req,'timetable.exceptions.remove'),v=parse(guardSchema,req.body);
     return db.transaction(()=>{
       const row=checkCurrent(db,v);
       const old=db.get<{date:string}>('SELECT date FROM timetable_exceptions WHERE id=? AND template_id=?',req.params.id,row?.id??null);

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {PERMISSION_KEYS} from '../shared/permissions.ts';
 
 export class Store {
   sqlite: DatabaseSync;
@@ -55,6 +56,24 @@ export class Store {
         INSERT INTO migrations VALUES(3,datetime('now'));
       `);
     });
+    // SQLite requires foreign_keys to be disabled outside the transaction while
+    // rebuilding a referenced table. Keep the old name until the final rename so
+    // every child table continues to reference users, then verify before commit.
+    if (!this.get('SELECT version FROM migrations WHERE version=4')) {
+      this.sqlite.exec('PRAGMA foreign_keys=OFF');
+      try {
+        this.transaction(() => {
+          if (this.get('SELECT version FROM migrations WHERE version=4')) return;
+          this.sqlite.exec(`CREATE TABLE users_v4(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('super_admin','admin','committee','student')),finance_manage INTEGER NOT NULL DEFAULT 0,must_change_password INTEGER NOT NULL DEFAULT 1,active INTEGER NOT NULL DEFAULT 1,version INTEGER NOT NULL DEFAULT 1,profile TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,in_class INTEGER NOT NULL DEFAULT 0 CHECK(in_class IN (0,1)),permissions TEXT NOT NULL DEFAULT '[]');
+            INSERT INTO users_v4(id,username,name,password_hash,role,finance_manage,must_change_password,active,version,profile,created_at,in_class)
+              SELECT id,username,name,password_hash,role,finance_manage,must_change_password,active,version,profile,created_at,in_class FROM users;`);
+          this.run("UPDATE users_v4 SET permissions=? WHERE role='admin'",JSON.stringify(PERMISSION_KEYS));
+          this.sqlite.exec(`DROP TABLE users; ALTER TABLE users_v4 RENAME TO users;`);
+          if (this.all('PRAGMA foreign_key_check').length) throw new Error('用户权限迁移外键校验失败');
+          this.run("INSERT INTO migrations VALUES(4,datetime('now'))");
+        });
+      } finally { this.sqlite.exec('PRAGMA foreign_keys=ON'); }
+    }
   }
   get<T = any>(sql: string, ...params: any[]): T | undefined { return this.sqlite.prepare(sql).get(...params) as T | undefined; }
   all<T = any>(sql: string, ...params: any[]): T[] { return this.sqlite.prepare(sql).all(...params) as T[]; }
