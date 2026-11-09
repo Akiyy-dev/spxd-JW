@@ -131,8 +131,8 @@ function assertOpening(db: Store, type: Entry['type'], id = '') {
 }
 
 function assertMember(db: Store, id: string) {
-  if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND role IN ('student','committee')", id)) {
-    throw new HttpError(400, '缴费对象必须是启用的学生或班委');
+  if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND (role IN ('student','committee') OR in_class=1)", id)) {
+    throw new HttpError(400, '缴费对象必须是启用且纳入班级名单的成员');
   }
 }
 
@@ -200,7 +200,7 @@ export function registerFinance(app: FastifyInstance, db: Store) {
 
   app.get(base + '/members', req => {
     requireFinanceReader(req);
-    return db.all("SELECT id,name FROM users WHERE active=1 AND role IN ('student','committee') ORDER BY name,id");
+    return db.all("SELECT id,name FROM users WHERE active=1 AND (role IN ('student','committee') OR in_class=1) ORDER BY name,id");
   });
 
   app.get(base + '/history', req => {

@@ -206,7 +206,7 @@ export function Accounts({changed}: {changed: () => void}) {
       {notice && <p className="feedback" role="status">{notice}</p>}
       {results && (results.length ? <div className="rows">{results.map(user => <div className="list-row account-row" key={user.id}>
         <span className="avatar">{user.name.slice(0, 1)}</span><span><strong>{user.name}</strong><small>{user.username} · {roleNames[user.role]}</small></span>
-        <div className="badge-group row-tail">{user.role === 'admin' ? <Badge tone="good"><ShieldCheck size={15}/>全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
+        <div className="badge-group row-tail">{user.role === 'admin' ? <><Badge tone="good"><ShieldCheck size={15}/>全部管理权限</Badge><Badge>{user.inClass ? '已纳入班级名单' : '未纳入班级名单'}</Badge></> : user.role === 'committee' && user.financeManage && <Badge tone="good"><ShieldCheck size={15}/>班费维护</Badge>}<Badge tone={user.active ? 'good' : 'bad'}>{user.active ? '启用' : '停用'}</Badge>{user.mustChangePassword && user.active && <Badge tone="warn">待改密</Badge>}</div>
         <div className="actions"><button className="btn quiet" onClick={() => setEditor({action: 'edit', user})}><Pencil size={16}/>编辑</button><button className="btn quiet" onClick={() => setEditor({action: 'reset', user})}><KeyRound size={16}/>重置密码</button></div>
       </div>)}</div> : <Empty>没有符合条件的账号。</Empty>)}
     </Panel>
@@ -220,7 +220,7 @@ function AccountEditor({user, close, saved}: {user?: User; close: () => void; sa
   const [role, setRole] = useState<Role>(user?.role || 'student')
   return <Modal title={user ? '编辑账号 · ' + user.name : '创建账号'} close={close}>
     <AsyncForm cancel={close} submit={async form => {
-      const input = {name: val(form, 'name'), role, financeManage: role === 'committee' && checked(form, 'financeManage')}
+      const input = {name: val(form, 'name'), role, inClass: role !== 'admin' || checked(form, 'inClass'), financeManage: role === 'committee' && checked(form, 'financeManage')}
       if (user) await api('/users/' + user.id, 'PUT', {...input, active: checked(form, 'active'), version: user.version})
       else await api('/users', 'POST', {...input, username: val(form, 'username'), password: form.get('password')})
       saved()
@@ -232,7 +232,10 @@ function AccountEditor({user, close, saved}: {user?: User; close: () => void; sa
         {!user && <Field label="初始密码" wide hint="至少 8 位，成员首次登录时需修改。"><input type="password" name="password" required minLength={8} maxLength={128} autoComplete="new-password"/></Field>}
         {user && <label className="check wide"><input type="checkbox" name="active" defaultChecked={user.active}/>启用账号</label>}
         {role === 'committee' && <label className="check wide"><input type="checkbox" name="financeManage" defaultChecked={user?.financeManage}/>授予班费维护权限</label>}
-        {role === 'admin' && <p className="muted wide">管理员拥有全部管理权限，包括班费维护，无需单独授权。</p>}
+        {role === 'admin' && <>
+          <label className="check wide"><input type="checkbox" name="inClass" defaultChecked={user?.role === 'admin' && user.inClass}/>是否纳入班级名单</label>
+          <p className="muted wide">纳入后可参与作业、事务提交和缴费登记，并保留全部管理权限。已有任务可在“参与名单”中补入；取消纳入后保留历史提交，未完成任务自动免交。</p>
+        </>}
       </div>
     </AsyncForm>
   </Modal>

@@ -5,7 +5,7 @@ import { createStore } from '../server/db.ts';
 import { bindAttachments, cleanupFiles, createBundle, registerFiles, validateAttachments, type StorageAdapter } from '../server/files.ts';
 import { registerFinance } from '../server/finance.ts';
 import type { User } from '../server/common.ts';
-const student:User={id:'s',name:'同学',username:'s',role:'student',active:true,financeManage:false,mustChangePassword:false,version:1};
+const student:User={id:'s',name:'同学',username:'s',role:'student',inClass:true,active:true,financeManage:false,mustChangePassword:false,version:1};
 const manager:User={...student,id:'m',username:'m',role:'committee'};
 const date = '2026-01-01';
 async function setup(user: User | null, configured = false, overrides: Partial<StorageAdapter> = {}) {
@@ -39,7 +39,7 @@ test('actual size is verified and foreign file cannot be attached',async()=>{con
 test('ready private receipt cannot be signed by a student',async()=>{const{app,db}=await setup(student,true);db.run('INSERT INTO files(id,name,size,mime,object_key,purpose,entity_id,owner_id,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)','receipt','r.pdf',20,'application/pdf','private/r','receipt','entry','m','ready','2026-01-01');assert.equal((await app.inject({method:'POST',url:'/api/files/receipt/download',payload:{}})).statusCode,403);await app.close();db.close()});
 
 const financeManager: User = { ...manager, financeManage: true };
-const administrator: User = { ...manager, id: 'a', username: 'a', name: '管理员', role: 'admin' };
+const administrator: User = { ...manager, id: 'a', username: 'a', name: '管理员', role: 'admin', inClass: false };
 
 for (const entity of ['entry', 'payment'] as const) {
   test(`administrators without a finance flag upload, confirm and bind private receipts to a ${entity}`, async t => {

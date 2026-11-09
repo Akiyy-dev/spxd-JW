@@ -129,7 +129,7 @@ function taskView(db: Store, row: TaskRow, user: User) {
 function initializeParticipants(db: Store, id: string, requiresSubmission: boolean) {
   if (requiresSubmission) {
     db.run(`INSERT INTO participants(task_id, user_id)
-      SELECT ?, id FROM users WHERE active=1 AND role IN ('student', 'committee')`, id);
+      SELECT ?, id FROM users WHERE active=1 AND (role IN ('student', 'committee') OR in_class=1)`, id);
   }
   db.run('UPDATE tasks SET snapshot_created=1 WHERE id=?', id);
 }
@@ -311,7 +311,7 @@ export function registerTasks(app: FastifyInstance, db: Store) {
     });
     app.post<{Params:TaskParams}>(`${base}/:id/submissions`, async (request, reply) => {
       const user = requireUser(request);
-      if (user.role === 'admin') throw new HttpError(403, '管理员不能提交');
+      if (!user.inClass) throw new HttpError(403, '您未纳入班级名单，不能提交');
       const input = parse(submissionInput, request.body);
       const {id} = request.params;
       const submission = db.transaction(() => {
@@ -359,8 +359,8 @@ export function registerTasks(app: FastifyInstance, db: Store) {
         conflict(row.version, input.version);
         if (!row.snapshot_created || !row.requires_submission) throw new HttpError(409, '首次发布需要提交的任务后才能调整名单');
         for (const userId of userIds) {
-          if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND role<>'admin'", userId)) {
-            throw new HttpError(400, '参与名单只能包含有效的学生或班委');
+          if (!db.get("SELECT id FROM users WHERE id=? AND active=1 AND (role<>'admin' OR in_class=1)", userId)) {
+            throw new HttpError(400, '参与名单只能包含启用且纳入班级名单的账号');
           }
         }
         db.run("UPDATE participants SET status='excused' WHERE task_id=? AND status='required'", id);

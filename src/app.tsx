@@ -95,6 +95,14 @@ export function App() {
     } catch (error) { setError(errorMessage(error)) } finally { setSigningOut(false) }
   }
 
+  async function refreshIdentity() {
+    setError('')
+    try {
+      const {user: refreshed} = await api<{user: User | null}>('/auth/me')
+      setIdentity(refreshed)
+    } catch (error) { setError(errorMessage(error)) }
+  }
+
   const guard = (content: ReactNode, admin = false) => {
     if (session.loading && user === undefined) return <Feedback loading />
     if (session.error && user === undefined) return <Feedback error={session.error} retry={session.reload} />
@@ -144,7 +152,7 @@ export function App() {
           <Route path="/finance" element={guard(user && <Finance user={user} />)} />
           <Route path="/class" element={guard(<ClassPage manager={manager} changed={config.reload} />)} />
           <Route path="/account" element={guard(user && <Account user={user} update={setIdentity} />)} />
-          <Route path="/accounts" element={guard(<Accounts changed={() => {setIdentity(undefined); session.reload()}} />, true)} />
+          <Route path="/accounts" element={guard(<Accounts changed={() => {void refreshIdentity()}} />, true)} />
           <Route path="*" element={<PageTitle label="404" title="找不到页面" detail="该地址可能已经变更。" actions={<Link className="btn primary" to="/">返回首页</Link>} />} />
         </Routes></Suspense>
       </main>
@@ -188,6 +196,7 @@ function Login({authenticated}: {authenticated: (user: User) => void}) {
 
 function Account({user, update}: {user: User; update: (user: User) => void}) {
   const [saved, setSaved] = useState(false)
+  const navigate = useNavigate()
   return <div className="stack">
     <PageTitle label="设置" title="个人账号" detail="查看当前登录身份，管理账号密码。" />
     <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
@@ -197,6 +206,10 @@ function Account({user, update}: {user: User; update: (user: User) => void}) {
         if (data.get('newPassword') !== data.get('confirm')) throw new Error('两次输入的新密码不一致。')
         const {user: changed} = await api<{user: User}>('/auth/password', 'POST', {currentPassword: data.get('currentPassword'), newPassword: data.get('newPassword')})
         update(changed)
+        if (user.mustChangePassword) {
+          navigate('/', {replace: true})
+          return
+        }
         setSaved(true)
       }}>
         <div className="form-grid">
@@ -215,17 +228,18 @@ function Dashboard({user, name}: {user: User; name: string}) {
   const homework = useQuery<Task[]>('/homework')
   const affairs = useQuery<Task[]>('/affairs')
   const manager = user.role !== 'student'
+  const member = user.role !== 'admin' || user.inClass
   const taskList = [...(homework.data || []), ...(affairs.data || [])]
   const tasks = taskList.filter(task => task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && !task.mySubmission)
     .sort((a, b) => (a.deadline || 'Z').localeCompare(b.deadline || 'Z'))
   const latest = (homework.data || []).filter(task => task.status === 'published').sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4)
   return <div className="stack dashboard">
     <section className="hero dashboard-hero"><div className="hero-content"><p className="eyebrow"><CalendarDays size={16}/>{dateLabel(today)}</p><h1>你好，{user.name}</h1><p>欢迎来到{name}，从这里开始今天的班级活动。</p></div><div className="hero-decoration" aria-hidden="true"><BookOpen size={92}/><span>CLASSROOM</span></div></section>
-    <div className={user.role !== 'admin' ? 'dashboard-grid' : 'dashboard-grid manager-home'}>
+    <div className={member ? 'dashboard-grid' : 'dashboard-grid manager-home'}>
       <Panel title="今日课程" detail={dateLabel(today)} actions={<Link className="text-link" to="/timetable">查看课表 <ArrowRight size={16}/></Link>}>
         <Feedback {...lessons} retry={lessons.reload}/>{lessons.data && <DailyCourses courses={lessons.data.today} periods={lessons.data.periods} />}
       </Panel>
-      {user.role !== 'admin' ? <Panel title="我的待办" detail="按截止时间排序" actions={<Badge>{tasks.length} 项</Badge>}>
+      {member ? <Panel title="我的待办" detail="按截止时间排序" actions={<Badge>{tasks.length} 项</Badge>}>
         <Feedback error={homework.error || affairs.error} loading={homework.loading || affairs.loading} retry={() => {homework.reload(); affairs.reload()}}/>
         {homework.data && affairs.data && (tasks.length ? <div className="rows">{tasks.map(task => <Link className="list-row" key={task.id} to={'/' + task.kind + '/' + task.id}><span className="row-icon"><ClipboardList size={18}/></span><span><strong>{task.title}</strong><small>{task.deadline ? timestamp(task.deadline) : '无截止时间'}</small></span><ArrowRight className="row-tail" size={17}/></Link>)}</div> : <Empty>没有待办事项。新发布的任务会在这里显示。</Empty>)}
       </Panel> : <Panel title="办理进度" detail="近期已发布的作业和事务">

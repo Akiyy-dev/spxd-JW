@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
-export interface User { id:string; username:string; name:string; role:'admin'|'committee'|'student'; financeManage:boolean; mustChangePassword:boolean; active:boolean; version:number }
+export interface User { id:string; username:string; name:string; role:'admin'|'committee'|'student'; financeManage:boolean; inClass:boolean; mustChangePassword:boolean; active:boolean; version:number }
 declare module 'fastify' { interface FastifyRequest { user: User | null } }
 export class HttpError extends Error { constructor(public statusCode:number, message:string) { super(message); } }
 export function requireUser(req: FastifyRequest): User { if (!req.user) throw new HttpError(401,'请先登录'); if(req.user.mustChangePassword) throw new HttpError(403,'请先修改初始密码'); return req.user; }

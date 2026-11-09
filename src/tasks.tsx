@@ -40,7 +40,7 @@ export function Tasks({kind, user}: {kind: TaskKind; user: User}) {
       {detail.data && <TaskDetail key={id} task={detail.data} user={user} base={base} reload={detail.reload} />}
     </> : <>
       <PageTitle label="班级工作台" title={title} detail={kind === 'homework' ? '查看作业要求、截止日期与提交记录。' : '办理报名、信息登记与班级材料收集。'} actions={<>
-        {user.role !== 'admin' && <button className="btn" onClick={() => setHistory(true)}><History size={17}/>我的提交历史</button>}
+        <button className="btn" onClick={() => setHistory(true)}><History size={17}/>我的提交历史</button>
         {manager && <Link className="btn primary" to={base + '?create=1'}><Plus size={17}/>{kind === 'homework' ? '新建作业' : '新建事务'}</Link>}
       </>}/>
       <section className="panel">
@@ -76,7 +76,7 @@ function TaskDetail({task, user, base, reload}: {task: Task; user: User; base: s
   const [lifecycle, setLifecycle] = useState<Task['status']>('published')
   const [notice, setNotice] = useState('')
   const overdue = task.deadline && Date.parse(task.deadline) < Date.now()
-  const canSubmit = user.role !== 'admin' && task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && (!overdue || task.allowLate)
+  const canSubmit = user.inClass && task.status === 'published' && task.requiresSubmission && task.myParticipantStatus === 'required' && (!overdue || task.allowLate)
   const close = () => setView(undefined)
   function saved(message: string) {
     setNotice(message)
@@ -97,7 +97,7 @@ function TaskDetail({task, user, base, reload}: {task: Task; user: User; base: s
       <p className="prose">{task.description || '暂无附加说明。'}</p>
       <FileList ids={task.attachments} />
     </Panel>
-    {user.role !== 'admin' && task.requiresSubmission && <Panel title="我的提交" actions={canSubmit && <button className="btn primary" onClick={() => setView('submit')}>{task.mySubmission ? '更新提交' : '填写并提交'}</button>}>
+    {(user.inClass || task.mySubmission) && task.requiresSubmission && <Panel title="我的提交" actions={canSubmit && <button className="btn primary" onClick={() => setView('submit')}>{task.mySubmission ? '更新提交' : '填写并提交'}</button>}>
       {task.mySubmission ? <SubmissionCard submission={task.mySubmission} fields={task.fields} /> : <p className="muted">{task.myParticipantStatus === 'excused' ? '你已免交此事项。' : task.myParticipantStatus === 'required' ? '还没有提交记录。' : '你不在当前参与名单中。'}</p>}
       {task.mySubmission && <button className="btn quiet" onClick={() => setView('history')}><History size={17}/>我的历史</button>}
     </Panel>}
@@ -206,7 +206,7 @@ function SubmissionEditor({task, path, close, saved}: {task: Task; path: string;
 function ParticipantEditor({task, path, close, saved}: {task: Task; path: string; close: () => void; saved: () => void}) {
   const roster = useQuery<ClassData>('/class')
   const participants = useQuery<Participant[]>(path + '/participants')
-  const members = roster.data?.members.filter(member => member.role !== 'admin')
+  const members = roster.data?.members
   return <Modal title="参与名单与进度" close={close}>
     <Feedback {...roster} retry={roster.reload}/><Feedback {...participants} retry={participants.reload}/>
     {members && participants.data && <AsyncForm cancel={close} button="更新名单" submit={async data => {

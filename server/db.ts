@@ -48,6 +48,13 @@ export class Store {
         INSERT INTO migrations VALUES(2,datetime('now'));
       `);
     });
+    this.transaction(() => {
+      if (this.get('SELECT version FROM migrations WHERE version=3')) return;
+      this.sqlite.exec(`
+        ALTER TABLE users ADD COLUMN in_class INTEGER NOT NULL DEFAULT 0 CHECK(in_class IN (0,1));
+        INSERT INTO migrations VALUES(3,datetime('now'));
+      `);
+    });
   }
   get<T = any>(sql: string, ...params: any[]): T | undefined { return this.sqlite.prepare(sql).get(...params) as T | undefined; }
   all<T = any>(sql: string, ...params: any[]): T[] { return this.sqlite.prepare(sql).all(...params) as T[]; }

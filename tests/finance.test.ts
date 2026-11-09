@@ -20,7 +20,7 @@ function fixture(t: TestContext, storage?: StorageAdapter) {
     ['甲同学', 'student', false], ['乙同学', 'student', false], ['管理员', 'admin', false],
   ] as const) {
     const id = randomUUID();
-    users.set(name, { id, username: id, name, role, financeManage, active: true, version: 1, mustChangePassword: false });
+    users.set(name, { id, username: id, name, role, financeManage, inClass: role !== 'admin', active: true, version: 1, mustChangePassword: false });
     db.run('INSERT INTO users(id,username,name,password_hash,role,finance_manage,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,?)',
       id, id, name, 'test', role, Number(financeManage), date);
   }

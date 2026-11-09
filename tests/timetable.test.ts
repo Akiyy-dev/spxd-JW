@@ -15,7 +15,7 @@ const course={id:'a',name:'数学',teacher:'王老师',room:'301',day:1,startPer
 async function setup(t:TestContext,role:'committee'|'student'|'admin'|null='committee',db:Store=createStore()) {
   db.run("INSERT OR IGNORE INTO users(id,username,name,password_hash,role,created_at) VALUES('m','m','班委','x','committee','2026-01-01')");
   const app=Fastify();app.decorateRequest('user',null);
-  app.addHook('onRequest',async r=>{r.user=role?{id:'m',name:'班委',username:'m',role,active:true,financeManage:false,mustChangePassword:false,version:1}:null});
+  app.addHook('onRequest',async r=>{r.user=role?{id:'m',name:'班委',username:'m',role,inClass:role!=='admin',active:true,financeManage:false,mustChangePassword:false,version:1}:null});
   app.setErrorHandler((e:any,_r,p)=>p.code(e.statusCode??500).send({message:e.message}));
   registerTimetable(app,db);registerCatalog(app,db);await app.ready();
   t.after(async()=>{await app.close();db.close()});

@@ -13,7 +13,7 @@ const username = z.string().trim().min(1).max(64);
 const name = z.string().trim().min(1).max(80);
 const password = z.string().min(8, '密码至少需要 8 个字符').max(128);
 const suppliedPassword = z.string().min(1).max(128);
-const newUser = z.object({ username, name, role, password, financeManage: z.boolean().optional() });
+const newUser = z.object({ username, name, role, password, financeManage: z.boolean().optional(), inClass: z.boolean().optional() });
 
 interface UserRow {
   id: string;
@@ -22,6 +22,7 @@ interface UserRow {
   role: User['role'];
   password_hash: string;
   finance_manage: number;
+  in_class: number;
   must_change_password: number;
   active: number;
   version: number;
@@ -45,6 +46,7 @@ export function publicUser(row: UserRow): User {
     name: row.name,
     role: row.role,
     financeManage: row.role === 'committee' && Boolean(row.finance_manage),
+    inClass: row.role !== 'admin' || Boolean(row.in_class),
     mustChangePassword: Boolean(row.must_change_password),
     active: Boolean(row.active),
     version: row.version,
@@ -54,9 +56,9 @@ export function publicUser(row: UserRow): User {
 function insertUser(db: Store, input: z.infer<typeof newUser>, passwordHash: string, mustChange: boolean) {
   const id = uid();
   if (db.get('SELECT id FROM users WHERE username=?', input.username)) throw new HttpError(409, '登录账号已存在');
-  db.run(`INSERT INTO users (id, username, name, password_hash, role, finance_manage, must_change_password, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, input.username, input.name, passwordHash, input.role,
-  Number(input.role === 'committee' && Boolean(input.financeManage)), Number(mustChange), now());
+  db.run(`INSERT INTO users (id, username, name, password_hash, role, finance_manage, in_class, must_change_password, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.username, input.name, passwordHash, input.role,
+  Number(input.role === 'committee' && Boolean(input.financeManage)), Number(input.role === 'admin' && Boolean(input.inClass)), Number(mustChange), now());
   return publicUser(db.get<UserRow>('SELECT * FROM users WHERE id=?', id)!);
 }
 
@@ -208,7 +210,7 @@ export function registerAuth(app: FastifyInstance, db: Store) {
   app.put<{Params:{id:string}}>('/api/users/:id', async request => {
     const admin = requireAdmin(request);
     const {id} = request.params;
-    const input = parse(z.object({name, role, active: z.boolean(), financeManage: z.boolean(), version: versionSchema}), request.body);
+    const input = parse(z.object({name, role, active: z.boolean(), financeManage: z.boolean(), inClass: z.boolean().optional(), version: versionSchema}), request.body);
     return db.transaction(() => {
       const row = db.get<UserRow>('SELECT * FROM users WHERE id=?', id);
       if (!row) throw new HttpError(404, '账号不存在');
@@ -217,10 +219,11 @@ export function registerAuth(app: FastifyInstance, db: Store) {
         !db.get("SELECT id FROM users WHERE role='admin' AND active=1 AND id<>?", id)) {
         throw new HttpError(409, '至少保留一名有效管理员');
       }
-      db.run(`UPDATE users SET name=?, role=?, active=?, finance_manage=?, version=version+1 WHERE id=?`,
-        input.name, input.role, Number(input.active), Number(input.role === 'committee' && input.financeManage), id);
+      const inClass = input.role === 'admin' && (input.inClass ?? (row.role === 'admin' && Boolean(row.in_class)));
+      db.run(`UPDATE users SET name=?, role=?, active=?, finance_manage=?, in_class=?, version=version+1 WHERE id=?`,
+        input.name, input.role, Number(input.active), Number(input.role === 'committee' && input.financeManage), Number(inClass), id);
       if (!input.active) db.run('DELETE FROM sessions WHERE user_id=?', id);
-      if (!input.active || input.role === 'admin') markUnfinishedExcused(db, id);
+      if (!input.active || (input.role === 'admin' && !inClass)) markUnfinishedExcused(db, id);
       const updated = publicUser(db.get<UserRow>('SELECT * FROM users WHERE id=?', id)!);
       db.audit(admin.id, 'user.update', id, {before: publicUser(row), after: updated});
       return updated;
