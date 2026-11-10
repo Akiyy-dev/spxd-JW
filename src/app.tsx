@@ -7,6 +7,7 @@ import { roleNames, type Config, type Task, type Timetable, type User } from './
 import { TimetablePage, DailyCourses } from './timetable'
 import { Avatar, PersonalAvatar } from './avatar'
 import { can, effectivePermissions, isClassMember, PERMISSIONS } from '../shared/permissions'
+import { authPath, loginReturnTo } from './auth-redirect'
 const Tasks = lazy(() => import('./tasks').then(module => ({default: module.Tasks})))
 const Resources = lazy(() => import('./catalog').then(module => ({default: module.Resources})))
 const ClassPage = lazy(() => import('./catalog').then(module => ({default: module.ClassPage})))
@@ -43,6 +44,7 @@ export function App() {
   const name = config.data?.name || '班级空间'
   const location = useLocation()
   const navigate = useNavigate()
+  const returnTo = loginReturnTo(location.search, location.state)
   const [drawer, setDrawer] = useState(false)
   const menuButton = useRef<HTMLButtonElement>(null)
   const closeMenu = useRef<HTMLButtonElement>(null)
@@ -124,8 +126,10 @@ export function App() {
   const guard = (content: ReactNode, admin = false) => {
     if (session.loading && user === undefined) return <Feedback loading />
     if (session.error && user === undefined) return <Feedback error={session.error} retry={session.reload} />
-    if (!user) return <Navigate to="/login" replace state={{from: location.pathname + location.search}} />
-    if (user.mustChangePassword && location.pathname !== '/account') return <Navigate to="/account" replace />
+    const destination = /^\/account\/*$/i.test(location.pathname) && new URLSearchParams(location.search).has('returnTo')
+      ? returnTo : location.pathname + location.search + location.hash
+    if (!user) return <Navigate to={authPath('/login', destination)} replace />
+    if (user.mustChangePassword && !/^\/account\/*$/i.test(location.pathname)) return <Navigate to={authPath('/account', destination)} replace />
     if (admin && !can(user, 'accounts.read')) return <Navigate to="/" replace />
     return content
   }
@@ -158,11 +162,7 @@ export function App() {
         <Feedback error={error} />
         <Suspense fallback={<Feedback loading />}><Routes key={permissionKey}>
           <Route path="/" element={user ? guard(<Dashboard user={user} name={name}/>) : session.loading ? <Feedback loading /> : <PublicPage config={config} />} />
-          <Route path="/login" element={user ? <Navigate to={user.mustChangePassword ? '/account' : '/'} replace /> : <Login authenticated={newUser => {
-            setIdentity(newUser)
-            const from = typeof location.state?.from === 'string' && /^\/(?!\/)/.test(location.state.from) ? location.state.from : '/'
-            navigate(newUser.mustChangePassword ? '/account' : from, {replace: true})
-          }} />} />
+          <Route path="/login" element={user ? <Navigate to={user.mustChangePassword ? authPath('/account', returnTo) : returnTo} replace /> : <Login authenticated={setIdentity} />} />
           <Route path="/timetable" element={<TimetablePage user={user?.mustChangePassword ? null : user} />} />
           <Route path="/duties" element={guard(user && <DutiesPage user={user} />)} />
           <Route path="/homework/*" element={guard(user && <Tasks key="homework" user={user} kind="homework" />)} />
@@ -216,6 +216,7 @@ function Login({authenticated}: {authenticated: (user: User) => void}) {
 function Account({user, update}: {user: User; update: (user: User) => void}) {
   const [saved, setSaved] = useState(false)
   const navigate = useNavigate()
+  const location = useLocation()
   return <div className="stack">
     <PageTitle label="设置" title="个人账号" detail="查看当前登录身份，管理账号密码。" />
     <Panel title={user.name} detail={user.username}><Badge>{roleNames[user.role]}</Badge> {user.role === 'super_admin' ? <Badge tone="good">全部管理权限</Badge> : user.role === 'admin' ? <Badge>已授权 {effectivePermissions(user).length} 项操作</Badge> : user.role === 'committee' && user.financeManage && <Badge tone="good">班费维护权限</Badge>}</Panel>
@@ -230,7 +231,7 @@ function Account({user, update}: {user: User; update: (user: User) => void}) {
         const {user: changed} = await api<{user: User}>('/auth/password', 'POST', {currentPassword: data.get('currentPassword'), newPassword: data.get('newPassword')})
         update(changed)
         if (user.mustChangePassword) {
-          navigate('/', {replace: true})
+          navigate(loginReturnTo(location.search, location.state), {replace: true})
           return
         }
         setSaved(true)
